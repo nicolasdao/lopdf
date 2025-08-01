@@ -11,6 +11,12 @@ eventual usage of this library is the
 [PDF 1.7 Reference Document](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf).
 The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no-cost-access-to-iso-32000-2-pdf-2-0/).
 
+## Requirements
+
+- **Rust 1.85 or later** - This library uses Rust 2024 edition features
+- To check your Rust version: `rustc --version`
+- To update Rust: `rustup update`
+
 ## Example Code
 
 * Create PDF document

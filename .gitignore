@@ -3,3 +3,5 @@ Cargo.lock
 test*.pdf
 .idea
 *.pdf
+specs
+.DS_Store
