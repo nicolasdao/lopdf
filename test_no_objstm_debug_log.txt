@@ -1,0 +1,31 @@
+PDF Compression Debug Log for: test_no_objstm.pdf
+================================================================================
+✗ NOT COMPRESSIBLE: 1 0 R: Catalog - Dict{Type, Pages...}
+    Reason: Referenced in trailer[Root]
+✓ COMPRESSIBLE: 2 0 R: Pages - Dict{Type, Kids, Count...}
+✓ COMPRESSIBLE: 3 0 R: Page - Dict{Type, Parent, MediaBox...}
+✓ COMPRESSIBLE: 4 0 R: Font - Dict{Type, Subtype, BaseFont...}
+✓ COMPRESSIBLE: 5 0 R: Font - Dict{Type, Subtype, BaseFont...}
+✓ COMPRESSIBLE: 6 0 R: Font - Dict{Type, Subtype, BaseFont...}
+✓ COMPRESSIBLE: 7 0 R: Font - Dict{Type, Subtype, BaseFont...}
+✓ COMPRESSIBLE: 8 0 R: Font - Dict{Type, Subtype, BaseFont...}
+✗ NOT COMPRESSIBLE: 9 0 R: XRef - Stream{dict: {Root, Type, Size...}, len: 63}
+    Reason: Is a stream object
+
+Summary:
+  Compressible objects: 7
+  Non-compressible objects: 2
+
+=== STRUCTURE COMPARISON ===
+Object count: 9 -> 10 (compressed 7 objects)
+Object streams created: 1
+
+=== CRITICAL OBJECT VERIFICATION ===
+Page 1 (3 0 R): OK - Dict{Type, Parent, MediaBox...}
+  ERROR: Page is compressed in stream 10 at index 1!
+  Contents: Unexpected type
+
+=== ORPHANED REFERENCE CHECK ===
+
+Total references checked: 3
+Orphaned references: 0

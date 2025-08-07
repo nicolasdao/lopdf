@@ -1,6 +1,6 @@
 use crate::parser::{self, ParserInput};
 use crate::{dictionary, Document, Error, Object, ObjectId, Result, Stream};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::num::TryFromIntError;
 use std::str::FromStr;
 
@@ -230,109 +230,73 @@ impl ObjectStream {
     }
 
     /// Check if an object can be compressed into an object stream
-    pub fn can_be_compressed(id: ObjectId, _obj: &Object, doc: &Document) -> bool {
-        // Use transitive closure to find all non-compressible objects
-        let non_compressible = Self::find_all_non_compressible_objects(doc);
-        !non_compressible.contains(&id)
-    }
-    
-    /// Find all non-compressible objects using transitive closure
-    fn find_all_non_compressible_objects(doc: &Document) -> HashSet<ObjectId> {
-        let mut non_compressible = HashSet::new();
+    pub fn can_be_compressed(id: ObjectId, obj: &Object, doc: &Document) -> bool {
+        // Rule 1: Stream objects cannot be compressed
+        if matches!(obj, Object::Stream(_)) {
+            return false;
+        }
         
-        // Phase 1: Mark inherently non-compressible objects
-        for (&id, obj) in &doc.objects {
-            let mut is_non_compressible = false;
-            
-            // Streams cannot be compressed
-            if matches!(obj, Object::Stream(_)) {
-                is_non_compressible = true;
+        // Rule 2: Objects with non-zero generation cannot be compressed
+        if id.1 != 0 {
+            return false;
+        }
+        
+        // Rule 3: Check if object is referenced in trailer
+        for (_key, value) in doc.trailer.iter() {
+            if value == &Object::Reference(id) {
+                return false;
             }
-            
-            // Check object type
-            if let Object::Dictionary(dict) = obj {
-                if let Ok(type_obj) = dict.get(b"Type") {
-                    if let Ok(type_name) = type_obj.as_name() {
-                        match type_name {
-                            b"Page" | b"Pages" | b"Catalog" | b"XRef" | b"ObjStm" => {
-                                is_non_compressible = true;
+        }
+        
+        // Rule 4: Specific object types that cannot be compressed
+        if let Object::Dictionary(dict) = obj {
+            if let Ok(type_obj) = dict.get(b"Type") {
+                if let Ok(type_name) = type_obj.as_name() {
+                    match type_name {
+                        // Cross-reference streams and object streams cannot be compressed
+                        b"XRef" => return false,
+                        b"ObjStm" => return false,
+                        
+                        // Catalog can only be excluded in linearized PDFs
+                        b"Catalog" => {
+                            // Check if PDF is linearized
+                            if Self::is_linearized(doc) {
+                                return false;
                             }
-                            _ => {}
                         }
+                        
+                        // Page, Pages, and all other types CAN be compressed
+                        _ => {}
                     }
                 }
             }
             
-            // Check if referenced in trailer
-            for (_key, value) in doc.trailer.iter() {
-                if value == &Object::Reference(id) {
-                    is_non_compressible = true;
-                    break;
+            // Special case: Encryption dictionary cannot be compressed
+            // Check if this might be the encryption dictionary
+            if let Ok(Object::Reference(encrypt_ref)) = doc.trailer.get(b"Encrypt") {
+                if id == *encrypt_ref {
+                    return false;
                 }
-            }
-            
-            if is_non_compressible {
-                non_compressible.insert(id);
             }
         }
         
-        // Phase 2: Iteratively mark objects referenced by non-compressible objects
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let mut newly_non_compressible = Vec::new();
-            
-            for &nc_id in &non_compressible {
-                if let Ok(nc_obj) = doc.get_object(nc_id) {
-                    let refs = Self::collect_all_references(nc_obj);
-                    
-                    for ref_id in refs {
-                        if !non_compressible.contains(&ref_id) && doc.objects.contains_key(&ref_id) {
-                            newly_non_compressible.push(ref_id);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-            
-            for id in newly_non_compressible {
-                non_compressible.insert(id);
-            }
-        }
-        
-        non_compressible
+        // Default: Allow compression
+        true
     }
     
-    /// Collect all object references from an object
-    fn collect_all_references(obj: &Object) -> HashSet<ObjectId> {
-        let mut refs = HashSet::new();
-        Self::collect_references_recursive(obj, &mut refs);
-        refs
-    }
-    
-    /// Recursively collect all references from an object
-    fn collect_references_recursive(obj: &Object, refs: &mut HashSet<ObjectId>) {
-        match obj {
-            Object::Reference(id) => {
-                refs.insert(*id);
-            }
-            Object::Array(array) => {
-                for item in array {
-                    Self::collect_references_recursive(item, refs);
+    /// Check if a PDF document is linearized
+    fn is_linearized(doc: &Document) -> bool {
+        // In a linearized PDF, the first object after the header should be a 
+        // linearization dictionary with /Linearized entry
+        // For simplicity, we check if any object has a /Linearized entry
+        for obj in doc.objects.values() {
+            if let Object::Dictionary(dict) = obj {
+                if dict.has(b"Linearized") {
+                    return true;
                 }
             }
-            Object::Dictionary(dict) => {
-                for (_key, value) in dict.iter() {
-                    Self::collect_references_recursive(value, refs);
-                }
-            }
-            Object::Stream(stream) => {
-                for (_key, value) in stream.dict.iter() {
-                    Self::collect_references_recursive(value, refs);
-                }
-            }
-            _ => {}
         }
+        false
     }
 }
 

@@ -87,4 +87,11 @@ fn test_save_with_object_streams() {
     // Verify PDF was created
     let content = String::from_utf8_lossy(&buffer);
     assert!(content.starts_with("%PDF-1.5"));
+    
+    // Verify object streams were created
+    assert!(content.contains("/ObjStm"), "Object streams should be created");
+    
+    // Verify that structural objects are NOT present as individual objects
+    assert!(!content.contains("2 0 obj\n<</Type/Pages"), "Pages object should be compressed");
+    assert!(!content.contains("3 0 obj\n<</Type/Page"), "Page object should be compressed");
 }

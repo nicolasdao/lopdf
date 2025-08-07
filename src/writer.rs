@@ -92,6 +92,11 @@ impl Document {
             bytes_written: 0,
         };
 
+        // Ensure PDF version is at least 1.5 (required for object streams)
+        if self.version < "1.5".to_string() {
+            self.version = "1.5".to_string();
+        }
+
         // Update cross-reference type if requested
         if options.use_xref_streams {
             self.reference_table.cross_reference_type = XrefType::CrossReferenceStream;

@@ -2,7 +2,7 @@ use lopdf::{Document, Object, ObjectId, SaveOptions};
 use std::collections::{HashMap, HashSet};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pdf_path = "/Users/nicolasdao/Downloads/pdfs/RFQ - SDS WebApp.docx.pdf";
+    let pdf_path = "/Users/nicolasdao/Downloads/poor.pdf";
     
     println!("Testing improved compression algorithm...\n");
     
