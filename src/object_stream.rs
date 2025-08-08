@@ -241,9 +241,9 @@ impl ObjectStream {
             return false;
         }
         
-        // Rule 3: Check if object is referenced in trailer
-        for (_key, value) in doc.trailer.iter() {
-            if value == &Object::Reference(id) {
+        // Rule 3: Only encryption dictionary cannot be compressed from trailer references
+        if let Ok(Object::Reference(encrypt_ref)) = doc.trailer.get(b"Encrypt") {
+            if id == *encrypt_ref {
                 return false;
             }
         }
@@ -268,14 +268,6 @@ impl ObjectStream {
                         // Page, Pages, and all other types CAN be compressed
                         _ => {}
                     }
-                }
-            }
-            
-            // Special case: Encryption dictionary cannot be compressed
-            // Check if this might be the encryption dictionary
-            if let Ok(Object::Reference(encrypt_ref)) = doc.trailer.get(b"Encrypt") {
-                if id == *encrypt_ref {
-                    return false;
                 }
             }
         }

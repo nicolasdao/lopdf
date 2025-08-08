@@ -31,12 +31,12 @@ fn test_can_be_compressed_trailer_referenced() {
         "Test" => "Value"
     }));
     
-    // Add to trailer
+    // Add to trailer (non-encryption reference)
     doc.trailer.set("TestRef", obj_id);
     
     let obj = doc.objects.get(&obj_id).unwrap();
-    assert!(!ObjectStream::can_be_compressed(obj_id, obj, &doc),
-            "Objects referenced in trailer should not be compressible");
+    assert!(ObjectStream::can_be_compressed(obj_id, obj, &doc),
+            "Non-encryption objects referenced in trailer should be compressible");
 }
 
 #[test]
@@ -138,6 +138,39 @@ fn test_can_be_compressed_encryption_dict() {
     let obj = doc.objects.get(&encrypt_id).unwrap();
     assert!(!ObjectStream::can_be_compressed(encrypt_id, obj, &doc),
             "Encryption dictionary should not be compressible");
+}
+
+#[test]
+fn test_catalog_can_be_compressed_with_trailer_reference() {
+    let mut doc = Document::with_version("1.5");
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference((2, 0))
+    });
+    
+    // Set as root in trailer (standard PDF structure)
+    doc.trailer.set("Root", catalog_id);
+    
+    let catalog_obj = doc.objects.get(&catalog_id).unwrap();
+    assert!(ObjectStream::can_be_compressed(catalog_id, catalog_obj, &doc),
+            "Catalog should be compressible even when referenced in trailer");
+}
+
+#[test]
+fn test_info_dict_can_be_compressed_with_trailer_reference() {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Title" => "Test PDF",
+        "Author" => "Test Author",
+        "CreationDate" => "D:20250807120000Z"
+    });
+    
+    // Set as info in trailer
+    doc.trailer.set("Info", info_id);
+    
+    let info_obj = doc.objects.get(&info_id).unwrap();
+    assert!(ObjectStream::can_be_compressed(info_id, info_obj, &doc),
+            "Info dictionary should be compressible even when referenced in trailer");
 }
 
 #[test]
@@ -387,20 +420,20 @@ fn test_regression_structural_objects_compression() {
         "Pages" => pages_id,
     });
     
-    // First verify objects can be compressed BEFORE setting trailer
+    // Set trailer reference
+    doc.trailer.set("Root", catalog_id);
+    
+    // Verify objects can be compressed even after trailer reference
     let catalog_obj = doc.objects.get(&catalog_id).unwrap();
     let pages_obj = doc.objects.get(&pages_id).unwrap();
     let page_obj = doc.objects.get(&page_id).unwrap();
     
     assert!(ObjectStream::can_be_compressed(catalog_id, catalog_obj, &doc),
-            "Catalog must be compressible in non-linearized PDFs (before trailer reference)");
+            "Catalog must be compressible in non-linearized PDFs even with trailer reference");
     assert!(ObjectStream::can_be_compressed(pages_id, pages_obj, &doc),
             "Pages object must be compressible");
     assert!(ObjectStream::can_be_compressed(page_id, page_obj, &doc),
             "Page object must be compressible");
-    
-    // Now set trailer - catalog will no longer be compressible due to trailer reference
-    doc.trailer.set("Root", catalog_id);
     
     // Save and verify compression
     let mut buffer = Vec::new();
@@ -412,9 +445,9 @@ fn test_regression_structural_objects_compression() {
     assert!(content.contains("/ObjStm"),
             "Object streams must be created when saving with modern format");
     
-    // Catalog will be individual object (due to trailer reference), but Pages and Page should be compressed
-    assert!(content.contains(&format!("{} 0 obj", catalog_id.0)),
-            "Catalog should remain as individual object due to trailer reference");
+    // All structural objects should be compressed now
+    assert!(!content.contains(&format!("{} 0 obj\n<</Type/Catalog", catalog_id.0)),
+            "Catalog should be in object stream, not as individual object");
     assert!(!content.contains(&format!("{} 0 obj\n<</Type/Pages", pages_id.0)),
             "Pages should be in object stream, not as individual object");
     assert!(!content.contains(&format!("{} 0 obj\n<</Type/Page", page_id.0)),
