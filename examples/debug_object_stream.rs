@@ -1,4 +1,4 @@
-use lopdf::{Document, Object, ObjectStream};
+use lopdf::{Object, ObjectStream};
 
 fn main() {
     println!("Testing Object Stream creation...\n");

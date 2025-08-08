@@ -1,5 +1,4 @@
-use lopdf::{Document, Object, ObjectId, Dictionary, SaveOptions};
-use std::collections::BTreeMap;
+use lopdf::{Document, Object, Dictionary, SaveOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a simple PDF with objects that can be compressed
@@ -78,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut objstm_count = 0;
     let mut compressed_count = 0;
     
-    for (id, obj) in &compressed_doc.objects {
+    for (_id, obj) in &compressed_doc.objects {
         if let Object::Stream(stream) = obj {
             if let Ok(type_obj) = stream.dict.get(b"Type") {
                 if let Ok(type_name) = type_obj.as_name() {

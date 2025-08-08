@@ -1,6 +1,4 @@
 use lopdf::{Document, SaveOptions, Object};
-use std::fs::File;
-use std::io::Read;
 
 fn main() {
     println!("Checking raw object stream in saved PDF...\n");

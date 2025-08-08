@@ -1,5 +1,4 @@
 use lopdf::{Document, Object, SaveOptions, dictionary};
-use std::io::Cursor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing structural object compression...\n");
@@ -14,14 +13,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     
     // Create pages tree (should be compressed)
-    let pages_id = doc.add_object(dictionary! {
+    let _pages_id = doc.add_object(dictionary! {
         "Type" => "Pages",
         "Kids" => vec![Object::Reference((3, 0))],
         "Count" => 1
     });
     
     // Create page (should be compressed)
-    let page_id = doc.add_object(dictionary! {
+    let _page_id = doc.add_object(dictionary! {
         "Type" => "Page",
         "Parent" => Object::Reference((2, 0)),
         "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],

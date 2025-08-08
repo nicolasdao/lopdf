@@ -1,4 +1,4 @@
-use lopdf::{Document, Object, ObjectId, SaveOptions};
+use lopdf::{Document, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("Testing improved compression algorithm...\n");
     
-    let mut doc = Document::load(pdf_path)?;
+    let doc = Document::load(pdf_path)?;
     
     // Build complete reference graph
     let (non_compressible, reason_map) = find_all_non_compressible_objects(&doc);
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Simulate compression
     let mut would_compress = Vec::new();
-    for (&id, obj) in &doc.objects {
+    for (&id, _obj) in &doc.objects {
         if !non_compressible.contains(&id) {
             would_compress.push(id);
         }
@@ -89,7 +89,7 @@ fn find_all_non_compressible_objects(doc: &Document) -> (HashSet<ObjectId>, Hash
         }
         
         // Check if referenced in trailer
-        for (key, value) in doc.trailer.iter() {
+        for (_key, value) in doc.trailer.iter() {
             if value == &Object::Reference(id) {
                 reason = Some("Referenced in trailer");
                 break;
