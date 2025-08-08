@@ -157,7 +157,8 @@ if false {
     doc.save("example.pdf").unwrap();
     
     // Or save with object streams for smaller file size
-    doc.save_modern("example_compressed.pdf").unwrap();
+    let mut file = std::fs::File::create("example_compressed.pdf").unwrap();
+    doc.save_modern(&mut file).unwrap();
 }
 ```
 
@@ -495,29 +496,31 @@ use lopdf::Document;
 
 Object streams allow multiple non-stream objects to be compressed together, significantly reducing file size.
 
-```rust
+```rust,no_run
 use lopdf::{Document, SaveOptions};
 
-// Load existing PDF
-let mut doc = Document::load("input.pdf")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load existing PDF
+    let mut doc = Document::load("input.pdf")?;
 
-// Save with modern features (object streams + cross-reference streams)
-// This typically reduces file size by 11-38%
-doc.save_modern("output.pdf")?;
+    // Save with modern features (object streams + cross-reference streams)
+    // This typically reduces file size by 11-38%
+    let mut file = std::fs::File::create("output.pdf")?;
+    doc.save_modern(&mut file)?;
 
-// Or use a writer
-let mut file = std::fs::File::create("output.pdf")?;
-doc.save_modern(&mut file)?;
+    // For more control, use SaveOptions
+    let options = SaveOptions::builder()
+        .use_object_streams(true)        // Enable object streams
+        .use_xref_streams(true)          // Enable cross-reference streams
+        .max_objects_per_stream(200)     // Max objects per stream (default: 100)
+        .compression_level(9)            // Compression level 0-9 (default: 6)
+        .build();
 
-// For more control, use SaveOptions
-let options = SaveOptions::builder()
-    .use_object_streams(true)        // Enable object streams
-    .use_xref_streams(true)          // Enable cross-reference streams
-    .max_objects_per_stream(200)     // Max objects per stream (default: 100)
-    .compression_level(9)            // Compression level 0-9 (default: 6)
-    .build();
-
-doc.save_with_options(&mut file, options)?;
+    let mut file2 = std::fs::File::create("output_custom.pdf")?;
+    doc.save_with_options(&mut file2, options)?;
+    
+    Ok(())
+}
 ```
 
 ### Complete Example: Creating and Saving with Object Streams
@@ -526,29 +529,36 @@ doc.save_with_options(&mut file, options)?;
 use lopdf::{Document, SaveOptions};
 use std::fs::File;
 
-// Create or load a document
-let mut doc = Document::with_version("1.5");
-// ... add content to document ...
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create or load a document
+    let mut doc = Document::with_version("1.5");
+    // ... add content to document ...
 
-// Method 1: Quick modern save (recommended)
-doc.save_modern("output.pdf")?;
+    // Method 1: Quick modern save (recommended)
+    let mut file = File::create("output.pdf")?;
+    doc.save_modern(&mut file)?;
 
-// Method 2: Custom settings for maximum compression
-let options = SaveOptions::builder()
-    .use_object_streams(true)
-    .use_xref_streams(true)
-    .max_objects_per_stream(200)
-    .compression_level(9)
-    .build();
+    // Method 2: Custom settings for maximum compression
+    let options = SaveOptions::builder()
+        .use_object_streams(true)
+        .use_xref_streams(true)
+        .max_objects_per_stream(200)
+        .compression_level(9)
+        .build();
 
-let mut file = File::create("output_max_compressed.pdf")?;
-doc.save_with_options(&mut file, options)?;
+    let mut file2 = File::create("output_max_compressed.pdf")?;
+    doc.save_with_options(&mut file2, options)?;
 
-// Compare file sizes
-let traditional_size = std::fs::metadata("output_traditional.pdf")?.len();
-let modern_size = std::fs::metadata("output.pdf")?.len();
-let reduction = 100.0 - (modern_size as f64 / traditional_size as f64 * 100.0);
-println!("Size reduction: {:.1}%", reduction);
+    // Compare file sizes (if traditional file exists)
+    if std::path::Path::new("output_traditional.pdf").exists() {
+        let traditional_size = std::fs::metadata("output_traditional.pdf")?.len();
+        let modern_size = std::fs::metadata("output.pdf")?.len();
+        let reduction = 100.0 - (modern_size as f64 / traditional_size as f64 * 100.0);
+        println!("Size reduction: {:.1}%", reduction);
+    }
+    
+    Ok(())
+}
 ```
 
 For more examples, see:
@@ -570,25 +580,28 @@ lopdf now includes full support for creating and reading PDF object streams (PDF
 ### Creating Object Streams Directly
 
 ```rust
-use lopdf::{Object, ObjectStream, ObjectStreamBuilder};
+use lopdf::{Object, ObjectStream, dictionary};
 
-// Create an object stream with custom settings
-let mut obj_stream = ObjectStream::builder()
-    .max_objects(100)      // Maximum objects per stream
-    .compression_level(6)  // zlib compression level (0-9)
-    .build();
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an object stream with custom settings
+    let mut obj_stream = ObjectStream::builder()
+        .max_objects(100)      // Maximum objects per stream
+        .compression_level(6)  // zlib compression level (0-9)
+        .build();
 
-// Add objects to the stream
-obj_stream.add_object((1, 0), Object::Integer(42))?;
-obj_stream.add_object((2, 0), Object::Name(b"Example".to_vec()))?;
-obj_stream.add_object((3, 0), dictionary! {
-    "Type" => "Font",
-    "Subtype" => "Type1",
-    "BaseFont" => "Helvetica"
-})?;
+    // Add objects to the stream
+    obj_stream.add_object((1, 0), Object::Integer(42))?;
+    obj_stream.add_object((2, 0), Object::Name(b"Example".to_vec()))?;
+    obj_stream.add_object((3, 0), Object::Dictionary(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica"
+    }))?;
 
-// Convert to a stream object
-let stream = obj_stream.to_stream_object()?;
+    // Convert to a stream object
+    let stream = obj_stream.to_stream_object()?;
+    # Ok::<(), Box<dyn std::error::Error>>(())
+# }
 ```
 
 ### Object Eligibility
@@ -610,13 +623,17 @@ When using `save_modern()` or enabling `use_xref_streams(true)`, lopdf creates b
 
 ### SaveOptions Reference
 
+The `SaveOptions` builder provides fine-grained control over PDF compression:
+
 ```rust
-SaveOptions::builder()
-    .use_object_streams(bool)        // Enable object streams (default: false)
-    .use_xref_streams(bool)          // Enable xref streams (default: false)
-    .max_objects_per_stream(u32)     // Max objects per stream (default: 100)
-    .compression_level(u32)          // zlib level 0-9 (default: 6)
-    .build()
+use lopdf::SaveOptions;
+
+let options = SaveOptions::builder()
+    .use_object_streams(true)        // Enable object streams (default: false)
+    .use_xref_streams(true)          // Enable xref streams (default: false)
+    .max_objects_per_stream(200)     // Max objects per stream (default: 100)
+    .compression_level(9)            // zlib level 0-9 (default: 6)
+    .build();
 ```
 
 ## FAQ
