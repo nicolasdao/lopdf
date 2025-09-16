@@ -129,7 +129,7 @@ impl CryptFilter for Aes128CryptFilter {
         let mut ciphertext = Vec::with_capacity(16 + ciphertext_len);
 
         // Generate random numbers to populate the initialization vector.
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         let mut iv = [0u8; 16];
         rng.fill(&mut iv);
 
@@ -213,7 +213,7 @@ impl CryptFilter for Aes256CryptFilter {
         let mut ciphertext = Vec::with_capacity(16 + ciphertext_len);
 
         // Generate random numbers to populate the initialization vector.
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         let mut iv = [0u8; 16];
         rng.fill(&mut iv);
 

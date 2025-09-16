@@ -755,7 +755,7 @@ impl PasswordAlgorithm {
         // dictionary.
         result.resize(32, 0);
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut result[16..]);
 
         Ok(result)
@@ -917,7 +917,7 @@ impl PasswordAlgorithm {
         // the 32-byte hash followed by the user validation salt followed by the user key salt is
         // stored as the U key.
         let mut user_value = [0u8; 48];
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
 
         rng.fill(&mut user_value[32..]);
 
@@ -983,7 +983,7 @@ impl PasswordAlgorithm {
         // 32-byte hash followed by the owner validation salt followed by the owner key salt is
         // stored as the O key.
         let mut owner_value = [0u8; 48];
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
 
         rng.fill(&mut owner_value[32..]);
 
@@ -1039,7 +1039,7 @@ impl PasswordAlgorithm {
         bytes[9..][..3].copy_from_slice(b"adb");
 
         // Set bytes 12-15 to 4 bytes of random data, which will be ignored.
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut bytes[12..][..4]);
 
         // Encrypt the 16-byte block using AES-256 in ECB mode with an initialization vector of
@@ -1384,7 +1384,7 @@ mod tests {
         // Compute the hashed values.
         let mut file_encryption_key = [0u8; 32];
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut file_encryption_key);
 
         let (user_value, user_encrypted) = algorithm.compute_hashed_user_password_r6(
@@ -1447,7 +1447,7 @@ mod tests {
         // Compute the hashed values.
         let mut file_encryption_key = [0u8; 32];
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut file_encryption_key);
 
         let (user_value, user_encrypted) = algorithm.compute_hashed_user_password_r6(

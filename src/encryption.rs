@@ -957,7 +957,7 @@ mod tests {
 
         let mut file_encryption_key = [0u8; 32];
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut file_encryption_key);
 
         #[allow(deprecated)]
@@ -986,7 +986,7 @@ mod tests {
 
         let mut file_encryption_key = [0u8; 32];
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         rng.fill(&mut file_encryption_key);
 
         let version = EncryptionVersion::V5 {

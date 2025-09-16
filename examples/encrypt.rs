@@ -73,7 +73,7 @@ fn main() {
 
             let crypt_filter: Arc<dyn CryptFilter> = Arc::new(Aes256CryptFilter);
 
-            let mut rng = rand::rng();
+            let mut rng = rand::thread_rng();
             rng.fill(&mut file_encryption_key);
 
             EncryptionVersion::V5 {
@@ -178,7 +178,7 @@ async fn main() {
 
             let crypt_filter: Arc<dyn CryptFilter> = Arc::new(Aes256CryptFilter);
 
-            let mut rng = rand::rng();
+            let mut rng = rand::thread_rng();
             rng.fill(&mut file_encryption_key);
 
             EncryptionVersion::V5 {
