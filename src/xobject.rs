@@ -24,6 +24,32 @@ pub struct PdfImage<'a> {
     pub origin_dict: &'a Dictionary,
 }
 
+/// An image with its associated page information.
+/// This is returned by the lazy image loading APIs with owned data.
+#[derive(Debug, Clone)]
+pub struct PageImage {
+    /// The page number (1-indexed) where this image appears
+    pub page_number: u32,
+    /// The object ID of the page containing this image
+    pub page_id: ObjectId,
+    /// The image's object ID in the PDF
+    pub id: ObjectId,
+    /// Image width in pixels
+    pub width: i64,
+    /// Image height in pixels
+    pub height: i64,
+    /// Color space (e.g., "DeviceRGB", "DeviceGray", "DeviceCMYK")
+    pub color_space: Option<String>,
+    /// Compression filters applied (e.g., "DCTDecode" for JPEG, "FlateDecode" for zlib)
+    pub filters: Vec<String>,
+    /// Bits per component (typically 8 or 16)
+    pub bits_per_component: Option<i64>,
+    /// Raw image content (owned data, potentially compressed)
+    pub content: Vec<u8>,
+    /// Full stream dictionary containing all image metadata
+    pub dict: Dictionary,
+}
+
 pub fn form(boundingbox: Vec<f32>, matrix: Vec<f32>, content: Vec<u8>) -> Stream {
     let mut dict = Dictionary::new();
     dict.set("Type", Object::Name(b"XObject".to_vec()));

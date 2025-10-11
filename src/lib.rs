@@ -49,6 +49,7 @@ pub use outlines::Outline;
 pub use reader::Reader;
 pub use save_options::{SaveOptions, SaveOptionsBuilder};
 pub use toc::Toc;
+pub use xobject::PageImage;
 
 pub use parser_aux::substring;
 pub use parser_aux::substr;

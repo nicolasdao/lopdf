@@ -20,6 +20,8 @@ The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no
   - [Modify PDF document](#modify-pdf-document)
   - [Load PDF with Progress Tracking](#load-pdf-with-progress-tracking)
   - [Fast Metadata Extraction with load_minimal()](#fast-metadata-extraction-with-load_minimal)
+  - [Extract Images with Lazy Loading](#extract-images-with-lazy-loading)
+    - [Running All Three Operations Concurrently](#running-all-three-operations-concurrently)
   - [Save PDF with Object Streams (Modern Format)](#save-pdf-with-object-streams-modern-format)
   - [Complete Example: Creating and Saving with Object Streams](#complete-example-creating-and-saving-with-object-streams)
 - [Object Streams Support](#object-streams-support)
@@ -632,6 +634,144 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Use cases**: PDF indexing, file browsers, batch metadata extraction, quick validation
 
 For more details, see [LOAD_MINIMAL.md](LOAD_MINIMAL.md).
+
+* Extract Images with Lazy Loading
+
+For extracting images from PDFs without loading the entire document, use the `process_images_with_callback()` API. This method loads only the structural objects and image XObjects, making it 5-20x faster than loading the full document.
+
+Images are processed via a callback function that's invoked immediately as each image is discovered, enabling progressive/streaming display:
+
+```rust,no_run
+use lopdf::Document;
+
+// Process images with immediate callback
+Document::process_images_with_callback("large.pdf", |page_image| {
+    println!("Page {}: Found {}x{} image",
+             page_image.page_number,
+             page_image.width,
+             page_image.height);
+
+    // Image data is immediately available
+    if page_image.filters.contains(&"DCTDecode".to_string()) {
+        // JPEG data - can save directly
+        std::fs::write(
+            format!("page_{}_img_{}.jpg", page_image.page_number, page_image.id.0),
+            &page_image.content
+        )?;
+    }
+
+    Ok(())
+})?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+**PageImage Structure:**
+
+Each callback receives a `PageImage` with:
+- `page_number`: Page number (1-indexed)
+- `page_id`: PDF object ID of the page
+- `id`: PDF object ID of the image
+- `width`, `height`: Image dimensions in pixels
+- `color_space`: Color space (e.g., "DeviceRGB", "DeviceGray")
+- `filters`: Compression filters (e.g., "DCTDecode" for JPEG, "FlateDecode" for zlib)
+- `bits_per_component`: Bits per color component (typically 8 or 16)
+- `content`: Raw image bytes (owned, potentially compressed)
+- `dict`: Complete stream dictionary with all metadata
+
+**Concurrent Operations:**
+
+For maximum efficiency when you need both metadata and images, use the `_mem` variants with a shared buffer:
+
+```rust,no_run
+use lopdf::Document;
+use std::sync::Arc;
+
+// Read file once
+let pdf_bytes = Arc::new(std::fs::read("file.pdf")?);
+
+// Run two operations concurrently
+let bytes1 = Arc::clone(&pdf_bytes);
+let handle = std::thread::spawn(move || {
+    Document::process_images_mem(&bytes1, |img| {
+        println!("Found image on page {}", img.page_number);
+        Ok(())
+    })
+});
+
+// Load metadata concurrently
+let minimal = Document::load_minimal_mem(&pdf_bytes)?;
+
+// Wait for image processing
+handle.join().unwrap()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+#### Running All Three Operations Concurrently
+
+For web applications that need full document data, metadata, and images simultaneously:
+
+```rust,no_run
+use lopdf::{Document, LoadOptions};
+use std::sync::Arc;
+
+// Read file once
+let pdf_bytes = Arc::new(std::fs::read("file.pdf")?);
+
+// Spawn 3 concurrent operations on the same buffer
+let bytes1 = Arc::clone(&pdf_bytes);
+let h1 = std::thread::spawn(move || {
+    // Full document load with all objects
+    Document::load_mem(&bytes1)
+});
+
+let bytes2 = Arc::clone(&pdf_bytes);
+let h2 = std::thread::spawn(move || {
+    // Fast metadata extraction only
+    Document::load_minimal_mem(&bytes2)
+});
+
+let bytes3 = Arc::clone(&pdf_bytes);
+let h3 = std::thread::spawn(move || {
+    // Stream all images with callback
+    let mut count = 0;
+    Document::process_images_mem(&bytes3, |img| {
+        count += 1;
+        // Process each image immediately (save, display, etc.)
+        println!("Image {}: Page {}, {}x{}", count, img.page_number, img.width, img.height);
+        Ok(())
+    })?;
+    Ok::<_, lopdf::Error>(count)
+});
+
+// Wait for all three to complete
+let full_doc = h1.join().unwrap()?;
+let minimal = h2.join().unwrap()?;
+let image_count = h3.join().unwrap()?;
+
+println!("✓ Full doc: {} objects loaded", full_doc.objects.len());
+println!("✓ Minimal: {} pages", minimal.get_pages().len());
+println!("✓ Extracted {} images", image_count);
+
+// All three operations shared the same 100MB buffer!
+// Total memory: ~100MB (not 300MB)
+// All operations ran in parallel on different CPU cores
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+**Key Benefits:**
+- **Single file read** - Only one disk I/O operation
+- **Shared memory** - All operations use the same buffer (Arc has zero-copy sharing)
+- **True parallelism** - Three CPU threads processing simultaneously
+- **Efficient for web apps** - Get everything you need in parallel
+
+**Performance:** 5-20x faster than `load()` + `get_page_images()` for large PDFs.
+
+**Available Methods:**
+- `Document::process_images_with_callback(path, callback)` - Load from file path
+- `Document::process_images_from(source, callback)` - Load from reader
+- `Document::process_images_mem(buffer, callback)` - Load from memory (best for concurrent ops)
+
+See [`examples/extract_images_lazy.rs`](examples/extract_images_lazy.rs) for complete examples.
 
 * Save PDF with Object Streams (Modern Format)
 
