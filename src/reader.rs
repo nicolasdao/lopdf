@@ -19,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::pin;
 
 use crate::error::{ParseError, XrefError};
+use crate::load_options::{LoadOptions, LoadProgress, ProgressInterval};
 use crate::object_stream::ObjectStream;
 use crate::parser::{self, ParserInput};
 use crate::xref::XrefEntry;
@@ -65,6 +66,91 @@ impl Document {
     /// Load a PDF document from a memory slice.
     pub fn load_mem(buffer: &[u8]) -> Result<Document> {
         buffer.try_into()
+    }
+
+    /// Load a PDF document from a specified file path with options.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions};
+    ///
+    /// let options = LoadOptions::new()
+    ///     .with_progress(|p| {
+    ///         println!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name);
+    ///     });
+    ///
+    /// let doc = Document::load_with_options("file.pdf", options)?;
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    #[inline]
+    pub fn load_with_options<P: AsRef<Path>>(path: P, options: LoadOptions) -> Result<Document> {
+        let file = File::open(path)?;
+        let capacity = Some(file.metadata()?.len() as usize);
+        Self::load_internal_with_options(file, capacity, None, options)
+    }
+
+    /// Load a PDF document from an arbitrary source with options.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions};
+    /// use std::fs::File;
+    ///
+    /// let file = File::open("file.pdf")?;
+    /// let options = LoadOptions::new()
+    ///     .with_progress(|p| {
+    ///         println!("Loading: {}%", (p.progress * 100.0) as u8);
+    ///     });
+    ///
+    /// let doc = Document::load_from_with_options(file, options)?;
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    #[inline]
+    pub fn load_from_with_options<R: Read>(source: R, options: LoadOptions) -> Result<Document> {
+        Self::load_internal_with_options(source, None, None, options)
+    }
+
+    /// Load a PDF document from a memory slice with options.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use lopdf::{Document, LoadOptions, ProgressInterval};
+    ///
+    /// let pdf_bytes = include_bytes!("../assets/example.pdf");
+    /// let options = LoadOptions::new()
+    ///     .with_progress(|p| {
+    ///         eprintln!("Progress: {}%", (p.progress * 100.0) as u8);
+    ///     })
+    ///     .with_progress_interval(ProgressInterval::Percentage(5.0));
+    ///
+    /// let doc = Document::load_mem_with_options(pdf_bytes, options)?;
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    pub fn load_mem_with_options(buffer: &[u8], options: LoadOptions) -> Result<Document> {
+        Reader {
+            buffer,
+            document: Document::new(),
+        }
+        .read_with_options(None, options)
+    }
+
+    fn load_internal_with_options<R: Read>(
+        mut source: R,
+        capacity: Option<usize>,
+        filter_func: Option<FilterFunc>,
+        options: LoadOptions,
+    ) -> Result<Document> {
+        let mut buffer = capacity.map(Vec::with_capacity).unwrap_or_default();
+        source.read_to_end(&mut buffer)?;
+
+        Reader {
+            buffer: &buffer,
+            document: Document::new(),
+        }
+        .read_with_options(filter_func, options)
     }
 }
 
@@ -362,6 +448,240 @@ impl Reader<'_> {
 
         if document.authenticate_password("").is_ok() {
             document.decrypt("")?;
+        }
+
+        Ok(document)
+    }
+
+    /// Read whole document with progress tracking.
+    pub fn read_with_options(mut self, filter_func: Option<FilterFunc>, options: LoadOptions) -> Result<Document> {
+        // Stage 0: Reading file (already done)
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(0, 0.01, 0, 0, Some("Reading file".to_string())));
+        }
+
+        // Stage 1: Finding PDF header
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(1, 0.02, 0, 0, Some("Finding PDF header".to_string())));
+        }
+
+        let offset = self.buffer.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+        self.buffer = &self.buffer[offset..];
+
+        // Stage 2: Parsing version
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(2, 0.03, 0, 0, Some("Parsing version".to_string())));
+        }
+
+        let version =
+            parser::header(ParserInput::new_extra(self.buffer, "header")).ok_or(ParseError::InvalidFileHeader)?;
+
+        //The binary_mark is in line 2 after the pdf version
+        if let Some(pos) = self.buffer.iter().position(|&byte| byte == b'\n') {
+            if let Some(binary_mark) =
+                parser::binary_mark(ParserInput::new_extra(&self.buffer[pos + 1..], "binary_mark"))
+            {
+                if binary_mark.iter().all(|&byte| byte >= 128) {
+                    self.document.binary_mark = binary_mark;
+                }
+            }
+        }
+
+        // Stage 3: Parsing cross-reference table
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(3, 0.06, 0, 0, Some("Parsing cross-reference table".to_string())));
+        }
+
+        let xref_start = Self::get_xref_start(self.buffer)?;
+        if xref_start > self.buffer.len() {
+            return Err(Error::Xref(XrefError::Start));
+        }
+        self.document.xref_start = xref_start;
+
+        let (mut xref, mut trailer) =
+            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
+
+        // Read previous Xrefs
+        let mut already_seen = HashSet::new();
+        let mut prev_xref_start = trailer.remove(b"Prev");
+        while let Some(prev) = prev_xref_start.and_then(|offset| offset.as_i64().ok()) {
+            if already_seen.contains(&prev) {
+                break;
+            }
+            already_seen.insert(prev);
+            if prev < 0 || prev as usize > self.buffer.len() {
+                return Err(Error::Xref(XrefError::PrevStart));
+            }
+
+            let (prev_xref, prev_trailer) =
+                parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[prev as usize..], ""), &self)?;
+            xref.merge(prev_xref);
+
+            // Read xref stream in hybrid-reference file
+            let prev_xref_stream_start = trailer.remove(b"XRefStm");
+            if let Some(prev) = prev_xref_stream_start.and_then(|offset| offset.as_i64().ok()) {
+                if prev < 0 || prev as usize > self.buffer.len() {
+                    return Err(Error::Xref(XrefError::StreamStart));
+                }
+
+                let (prev_xref, _) =
+                    parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[prev as usize..], ""), &self)?;
+                xref.merge(prev_xref);
+            }
+
+            prev_xref_start = prev_trailer.get(b"Prev").cloned().ok();
+        }
+        let xref_entry_count = xref.max_id().checked_add(1).ok_or(ParseError::InvalidXref)?;
+        if xref.size != xref_entry_count {
+            warn!(
+                "Size entry of trailer dictionary is {}, correct value is {}.",
+                xref.size, xref_entry_count
+            );
+            xref.size = xref_entry_count;
+        }
+
+        // Stage 4: Parsing trailer
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(4, 0.41, 0, 0, Some("Parsing trailer".to_string())));
+        }
+
+        self.document.version = version;
+        self.document.max_id = xref.size - 1;
+        self.document.trailer = trailer;
+        self.document.reference_table = xref;
+
+        let is_encrypted = self.document.trailer.get(b"Encrypt").is_ok();
+
+        let zero_length_streams = Mutex::new(vec![]);
+        let object_streams = Mutex::new(vec![]);
+
+        // Stage 5: Loading objects
+        let total_objects = self.document.reference_table.entries.len();
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(5, 0.46, 0, total_objects, Some("Loading objects".to_string())));
+        }
+
+        // For progress tracking in parallel loading
+        #[cfg(feature = "rayon")]
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[cfg(feature = "rayon")]
+        let processed = AtomicUsize::new(0);
+
+        let entries_filter_map = |(_, entry): (&_, &_)| {
+            if let XrefEntry::Normal { offset, .. } = *entry {
+                let (object_id, mut object) = self
+                    .read_object(offset as usize, None, &mut HashSet::new())
+                    .map_err(|e| error!("Object load error: {e:?}"))
+                    .ok()?;
+                if let Some(filter_func) = filter_func {
+                    filter_func(object_id, &mut object)?;
+                }
+
+                if let Ok(ref mut stream) = object.as_stream_mut() {
+                    if stream.dict.has_type(b"ObjStm") && !is_encrypted {
+                        let obj_stream = ObjectStream::new(stream).ok()?;
+                        let mut object_streams = object_streams.lock().unwrap();
+                        if let Some(filter_func) = filter_func {
+                            let objects: BTreeMap<(u32, u16), Object> = obj_stream
+                                .objects
+                                .into_iter()
+                                .filter_map(|(object_id, mut object)| filter_func(object_id, &mut object))
+                                .collect();
+                            object_streams.extend(objects);
+                        } else {
+                            object_streams.extend(obj_stream.objects);
+                        }
+                    } else if stream.content.is_empty() {
+                        let mut zero_length_streams = zero_length_streams.lock().unwrap();
+                        zero_length_streams.push(object_id);
+                    }
+                }
+
+                // Report progress
+                #[cfg(feature = "rayon")]
+                if let Some(ref callback) = options.progress_callback {
+                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    let should_report = match options.progress_interval {
+                        ProgressInterval::Items(n) => count % n == 0 || count == total_objects,
+                        ProgressInterval::Percentage(p) => {
+                            let current_pct = (count as f64 / total_objects as f64) * 100.0;
+                            let prev_pct = ((count - 1) as f64 / total_objects as f64) * 100.0;
+                            (current_pct / p).floor() > (prev_pct / p).floor() || count == total_objects
+                        }
+                    };
+                    if should_report {
+                        let progress = 0.46 + (0.54 * count as f64 / total_objects as f64);
+                        callback(LoadProgress::new(5, progress, count, total_objects, None));
+                    }
+                }
+
+                Some((object_id, object))
+            } else {
+                None
+            }
+        };
+
+        #[cfg(feature = "rayon")]
+        {
+            self.document.objects = self
+                .document
+                .reference_table
+                .entries
+                .par_iter()
+                .filter_map(entries_filter_map)
+                .collect();
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            self.document.objects = self
+                .document
+                .reference_table
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, entry)| {
+                    let result = entries_filter_map(entry);
+
+                    // Report progress for sequential loading
+                    if let Some(ref callback) = options.progress_callback {
+                        let count = idx + 1;
+                        let should_report = match options.progress_interval {
+                            ProgressInterval::Items(n) => count % n == 0 || count == total_objects,
+                            ProgressInterval::Percentage(p) => {
+                                let current_pct = (count as f64 / total_objects as f64) * 100.0;
+                                let prev_pct = ((count - 1) as f64 / total_objects as f64) * 100.0;
+                                (current_pct / p).floor() > (prev_pct / p).floor() || count == total_objects
+                            }
+                        };
+                        if should_report {
+                            let progress = 0.46 + (0.54 * count as f64 / total_objects as f64);
+                            callback(LoadProgress::new(5, progress, count, total_objects, None));
+                        }
+                    }
+
+                    result
+                })
+                .collect();
+        }
+
+        // Only add entries, but never replace entries
+        for (id, entry) in object_streams.into_inner().unwrap() {
+            self.document.objects.entry(id).or_insert(entry);
+        }
+
+        for object_id in zero_length_streams.into_inner().unwrap() {
+            let _ = self.read_stream_content(object_id);
+        }
+
+        let mut document = self.document;
+
+        if document.authenticate_password("").is_ok() {
+            document.decrypt("")?;
+        }
+
+        // Stage 6: Complete
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(6, 1.0, total_objects, total_objects, Some("Complete".to_string())));
         }
 
         Ok(document)

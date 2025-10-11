@@ -26,6 +26,7 @@ mod processor;
 mod toc;
 mod writer;
 
+mod load_options;
 mod object_stream;
 mod parser;
 mod parser_aux;
@@ -42,6 +43,7 @@ pub use encodings::{encode_utf16_be, encode_utf8, Encoding};
 pub use encryption::{EncryptionState, EncryptionVersion, Permissions};
 pub use error::{Error, Result};
 pub use incremental_document::IncrementalDocument;
+pub use load_options::{LoadOptions, LoadProgress, ProgressInterval};
 pub use object_stream::{ObjectStream, ObjectStreamBuilder, ObjectStreamConfig};
 pub use outlines::Outline;
 pub use reader::Reader;

@@ -11,6 +11,19 @@ eventual usage of this library is the
 [PDF 1.7 Reference Document](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf).
 The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no-cost-access-to-iso-32000-2-pdf-2-0/).
 
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Example Code](#example-code)
+  - [Complete Example: Creating and Saving with Object Streams](#complete-example-creating-and-saving-with-object-streams)
+- [Object Streams Support](#object-streams-support)
+  - [Key Benefits](#key-benefits)
+  - [Creating Object Streams Directly](#creating-object-streams-directly)
+  - [Object Eligibility](#object-eligibility)
+  - [Cross-reference Streams](#cross-reference-streams)
+  - [SaveOptions Reference](#saveoptions-reference)
+- [FAQ](#faq)
+
 ## Requirements
 
 - **Rust 1.85 or later** - Required for Rust 2024 edition features and object streams support
@@ -491,6 +504,75 @@ use lopdf::Document;
     });
 }
 ```
+
+* Load PDF with Progress Tracking
+
+You can track the loading progress of PDF documents using the new `load_with_options` methods. This is useful for providing user feedback when loading large PDFs.
+
+```rust,no_run
+use lopdf::{Document, LoadOptions, ProgressInterval};
+
+#[cfg(not(feature = "async"))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Basic progress tracking with percentage updates
+    let options = LoadOptions::new()
+        .with_progress(|p| {
+            println!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name);
+        });
+
+    let doc = Document::load_with_options("input.pdf", options)?;
+
+    // Load with custom progress interval (report every 5%)
+    let options = LoadOptions::new()
+        .with_progress(|p| {
+            if p.stage == 5 {  // Stage 5 is loading objects
+                println!("Loading objects: {}/{}", p.items_processed, p.items_total);
+            }
+        })
+        .with_progress_interval(ProgressInterval::Percentage(5.0));
+
+    let doc = Document::load_with_options("input.pdf", options)?;
+
+    // Load from memory with progress tracking
+    let pdf_bytes = std::fs::read("input.pdf")?;
+    let options = LoadOptions::new()
+        .with_progress(|p| {
+            eprintln!("[{}%] {}", (p.progress * 100.0) as u8, p.stage_name);
+        });
+
+    let doc = Document::load_mem_with_options(&pdf_bytes, options)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Note: Progress tracking is currently only available for synchronous loading
+    // Use the standard Document::load() for async operations
+    println!("This example requires the async feature to be disabled");
+    Ok(())
+}
+```
+
+**Progress Stages:**
+- Stage 0: Reading file (1%)
+- Stage 1: Finding PDF header (1%)
+- Stage 2: Parsing version (1%)
+- Stage 3: Parsing cross-reference table (35%)
+- Stage 4: Parsing trailer (5%)
+- Stage 5: Loading objects (55%)
+- Stage 6: Complete (100%)
+
+**Progress Intervals:**
+- `ProgressInterval::Percentage(f64)` - Report every N percent (e.g., `5.0` for every 5%)
+- `ProgressInterval::Items(usize)` - Report every N items processed (e.g., `10` for every 10 objects)
+
+**Available Methods:**
+- `Document::load_with_options(path, options)` - Load from file path with progress
+- `Document::load_from_with_options(source, options)` - Load from reader with progress
+- `Document::load_mem_with_options(buffer, options)` - Load from memory with progress
+
+All existing loading methods (`load()`, `load_from()`, `load_mem()`) remain unchanged and continue to work without progress tracking.
 
 * Save PDF with Object Streams (Modern Format)
 
