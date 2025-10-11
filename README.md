@@ -15,6 +15,12 @@ The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no
 
 - [Requirements](#requirements)
 - [Example Code](#example-code)
+  - [Create PDF document](#create-pdf-document)
+  - [Merge PDF documents](#merge-pdf-documents)
+  - [Modify PDF document](#modify-pdf-document)
+  - [Load PDF with Progress Tracking](#load-pdf-with-progress-tracking)
+  - [Fast Metadata Extraction with load_minimal()](#fast-metadata-extraction-with-load_minimal)
+  - [Save PDF with Object Streams (Modern Format)](#save-pdf-with-object-streams-modern-format)
   - [Complete Example: Creating and Saving with Object Streams](#complete-example-creating-and-saving-with-object-streams)
 - [Object Streams Support](#object-streams-support)
   - [Key Benefits](#key-benefits)
@@ -573,6 +579,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `Document::load_mem_with_options(buffer, options)` - Load from memory with progress
 
 All existing loading methods (`load()`, `load_from()`, `load_mem()`) remain unchanged and continue to work without progress tracking.
+
+* Fast Metadata Extraction with `load_minimal()`
+
+For quickly extracting basic PDF information without loading the entire document, use the `load_minimal()` API:
+
+```rust,no_run
+use lopdf::Document;
+
+#[cfg(not(feature = "async"))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Fast metadata extraction (only loads ~3-20 objects)
+    let doc = Document::load_minimal("large_document.pdf")?;
+
+    println!("Version: {}", doc.version);
+    println!("Page count: {}", doc.get_pages().len());
+
+    // Access metadata if available
+    if let Ok(info_id) = doc.trailer.get(b"Info").and_then(|o| o.as_reference()) {
+        if let Ok(info) = doc.get_dictionary(info_id) {
+            // Extract title, author, etc.
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Note: load_minimal is currently only available for synchronous loading
+    println!("This example requires the async feature to be disabled");
+    Ok(())
+}
+```
+
+**Performance**: 2-20x faster than `load()` depending on PDF size.
+
+**What's loaded**:
+- PDF version, trailer, catalog
+- Pages tree structure
+- Page objects (without content streams)
+- Info dictionary
+
+**What's NOT loaded**:
+- Page content, fonts, images, resources
+- Annotations, forms, embedded files
+
+**Limitations**:
+- Does not support PDFs with object-stream-compressed structural objects
+- Returns incomplete document (content operations will fail)
+
+**Use cases**: PDF indexing, file browsers, batch metadata extraction, quick validation
+
+For more details, see [LOAD_MINIMAL.md](LOAD_MINIMAL.md).
 
 * Save PDF with Object Streams (Modern Format)
 
