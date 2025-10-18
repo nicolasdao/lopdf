@@ -1182,20 +1182,81 @@ impl Reader<'_> {
         // For each page, selectively load and process images
         for (page_number, page_id) in pages {
             if let Ok(images) = self.load_page_images(page_id) {
-                for image in images {
+                // First, collect all image data with owned values (this ends the borrow of `images`)
+                let image_data: Vec<_> = images.into_iter().map(|image| {
+                    (
+                        image.id,
+                        image.width,
+                        image.height,
+                        image.color_space.clone(),
+                        image.filters.unwrap_or_default(),
+                        image.bits_per_component,
+                        image.content.to_vec(),
+                        image.origin_dict.clone(),
+                    )
+                }).collect();
+
+                // Now we can access self.document again to extract SMask data
+                for (id, width, height, color_space, filters, bits_per_component, content, dict) in image_data {
                     // Create owned PageImage
-                    let page_image = crate::xobject::PageImage {
+                    let mut page_image = crate::xobject::PageImage {
                         page_number,
                         page_id,
-                        id: image.id,
-                        width: image.width,
-                        height: image.height,
-                        color_space: image.color_space.clone(),
-                        filters: image.filters.unwrap_or_default(),
-                        bits_per_component: image.bits_per_component,
-                        content: image.content.to_vec(),
-                        dict: image.origin_dict.clone(),
+                        id,
+                        width,
+                        height,
+                        color_space,
+                        filters,
+                        bits_per_component,
+                        content,
+                        dict: dict.clone(),
+                        // Initialize SMask fields (v0.39.1)
+                        smask_content: None,
+                        smask_width: None,
+                        smask_height: None,
+                        smask_filters: None,
                     };
+
+                    // Extract SMask data if available (enhancement for transparency support - v0.39.1)
+                    if let Ok(smask_ref) = dict.get(b"SMask") {
+                        if let Ok(smask_id) = smask_ref.as_reference() {
+                            if let Ok(smask_obj) = self.document.get_object(smask_id) {
+                                if let Ok(smask_stream) = smask_obj.as_stream() {
+                                    // Extract SMask content
+                                    page_image.smask_content = Some(smask_stream.content.clone());
+
+                                    // Extract SMask dimensions
+                                    page_image.smask_width = smask_stream
+                                        .dict
+                                        .get(b"Width")
+                                        .ok()
+                                        .and_then(|o| o.as_i64().ok());
+
+                                    page_image.smask_height = smask_stream
+                                        .dict
+                                        .get(b"Height")
+                                        .ok()
+                                        .and_then(|o| o.as_i64().ok());
+
+                                    // Extract SMask filters
+                                    let filters = match smask_stream.dict.get(b"Filter") {
+                                        Ok(Object::Name(name)) => {
+                                            vec![String::from_utf8_lossy(name).into_owned()]
+                                        }
+                                        Ok(Object::Array(arr)) => arr
+                                            .iter()
+                                            .filter_map(|o| o.as_name().ok())
+                                            .map(|name| String::from_utf8_lossy(name).into_owned())
+                                            .collect(),
+                                        _ => Vec::new(),
+                                    };
+                                    if !filters.is_empty() {
+                                        page_image.smask_filters = Some(filters);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     // Invoke callback immediately
                     callback(page_image)?;
@@ -1419,7 +1480,24 @@ impl Reader<'_> {
             // Load the image stream if not already loaded
             let _ = self.load_object_if_needed(*id);
 
-            // Load stream content if needed
+            // Load SMask if referenced (enhancement for transparency support - v0.39.1)
+            if let Ok(stream) = self.document.get_object(*id).and_then(Object::as_stream) {
+                if let Ok(smask_ref) = stream.dict.get(b"SMask") {
+                    if let Ok(smask_id) = smask_ref.as_reference() {
+                        // Load SMask object
+                        let _ = self.load_object_if_needed(smask_id);
+
+                        // Load SMask stream content if empty
+                        if let Ok(smask_stream) = self.document.get_object(smask_id).and_then(Object::as_stream) {
+                            if smask_stream.content.is_empty() {
+                                let _ = self.read_stream_content(smask_id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Load image stream content if needed
             if let Ok(stream) = self.document.get_object(*id).and_then(Object::as_stream) {
                 if stream.content.is_empty() {
                     let _ = self.read_stream_content(*id);

@@ -48,6 +48,14 @@ pub struct PageImage {
     pub content: Vec<u8>,
     /// Full stream dictionary containing all image metadata
     pub dict: Dictionary,
+    /// Raw SMask (transparency) stream data (potentially compressed) - new in 0.39.1
+    pub smask_content: Option<Vec<u8>>,
+    /// SMask width in pixels - new in 0.39.1
+    pub smask_width: Option<i64>,
+    /// SMask height in pixels - new in 0.39.1
+    pub smask_height: Option<i64>,
+    /// SMask compression filters (e.g., "FlateDecode") - new in 0.39.1
+    pub smask_filters: Option<Vec<String>>,
 }
 
 pub fn form(boundingbox: Vec<f32>, matrix: Vec<f32>, content: Vec<u8>) -> Stream {
