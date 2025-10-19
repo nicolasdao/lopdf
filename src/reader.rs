@@ -1338,10 +1338,10 @@ impl Reader<'_> {
         self.document.trailer = trailer.clone();
         self.document.reference_table = xref;
 
-        // Load all object streams first (for compressed PDFs)
-        self.load_all_object_streams()?;
+        // DON'T load all object streams upfront - load them on-demand instead!
+        // This is the key fix for performance with compressed PDFs
 
-        // Load catalog
+        // Load catalog (will load its object stream on-demand if needed)
         if let Ok(catalog_id) = trailer.get(b"Root").and_then(Object::as_reference) {
             self.load_object_if_needed(catalog_id)?;
 
@@ -1403,15 +1403,69 @@ impl Reader<'_> {
 
     /// Load an object if it's not already loaded (handles both normal and object stream objects)
     fn load_object_if_needed(&mut self, id: ObjectId) -> Result<()> {
-        if !self.document.objects.contains_key(&id) {
-            // Object not loaded yet - try to load it
-            if let Ok(offset) = self.get_offset(id) {
+        // Check if already loaded
+        if self.document.objects.contains_key(&id) {
+            return Ok(());
+        }
+
+        // Get the xref entry for this object
+        let entry = self.document.reference_table.get(id.0).ok_or(Error::MissingXrefEntry)?;
+
+        match *entry {
+            XrefEntry::Normal { offset, generation } if generation == id.1 => {
+                // Normal object - load it directly from offset
                 let (_, obj) = self.read_object(offset as usize, Some(id), &mut HashSet::new())?;
                 self.document.objects.insert(id, obj);
             }
-            // If get_offset fails, the object might be in an object stream that we've already loaded
-            // In that case, it should already be in document.objects
+            XrefEntry::Compressed { container, index: _ } => {
+                // Object is compressed in an object stream
+                // Load the object stream on-demand (if not already loaded)
+                self.load_object_stream_if_needed(container)?;
+                // The object should now be in document.objects
+                // If it's not there, that's an error in the PDF
+            }
+            _ => return Err(Error::MissingXrefEntry),
         }
+
+        Ok(())
+    }
+
+    /// Load a specific object stream on-demand (only if not already loaded)
+    fn load_object_stream_if_needed(&mut self, objstm_id: u32) -> Result<()> {
+        use crate::object_stream::ObjectStream;
+
+        let objstm_obj_id = (objstm_id, 0);
+
+        // Check if this object stream is already loaded
+        if self.document.objects.contains_key(&objstm_obj_id) {
+            return Ok(()); // Already loaded
+        }
+
+        // Get the xref entry for the object stream
+        let entry = self.document.reference_table.get(objstm_id).ok_or(Error::MissingXrefEntry)?;
+
+        if let XrefEntry::Normal { offset, generation } = *entry {
+            if generation == 0 {
+                // Load the object stream
+                let (_, mut obj) = self.read_object(offset as usize, Some(objstm_obj_id), &mut HashSet::new())?;
+
+                // Check if it's actually an object stream
+                if let Ok(stream) = obj.as_stream_mut() {
+                    if stream.dict.has_type(b"ObjStm") {
+                        // Decompress and extract all objects from this stream
+                        if let Ok(obj_stream) = ObjectStream::new(stream) {
+                            for (id, obj) in obj_stream.objects {
+                                self.document.objects.entry(id).or_insert(obj);
+                            }
+                        }
+                    }
+                }
+
+                // Store the object stream itself
+                self.document.objects.insert(objstm_obj_id, obj);
+            }
+        }
+
         Ok(())
     }
 
