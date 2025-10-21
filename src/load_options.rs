@@ -68,15 +68,15 @@ impl Default for ProgressInterval {
 }
 
 /// Options for loading PDF documents
-pub struct LoadOptions {
+pub struct LoadOptions<'a> {
     /// Optional progress callback
-    pub progress_callback: Option<Box<dyn Fn(LoadProgress) + Send + Sync>>,
+    pub progress_callback: Option<Box<dyn Fn(LoadProgress) + Send + Sync + 'a>>,
 
     /// Progress reporting interval
     pub progress_interval: ProgressInterval,
 }
 
-impl Default for LoadOptions {
+impl Default for LoadOptions<'_> {
     fn default() -> Self {
         Self {
             progress_callback: None,
@@ -85,13 +85,15 @@ impl Default for LoadOptions {
     }
 }
 
-impl LoadOptions {
+impl<'a> LoadOptions<'a> {
     /// Create a new LoadOptions with default values
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set a progress callback
+    ///
+    /// The callback can now borrow from the local scope, enabling real-time progress updates.
     ///
     /// # Examples
     ///
@@ -103,9 +105,25 @@ impl LoadOptions {
     ///         println!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name);
     ///     });
     /// ```
+    ///
+    /// ```rust
+    /// use lopdf::LoadOptions;
+    /// use std::sync::Arc;
+    /// use std::sync::Mutex;
+    ///
+    /// // Can now borrow from local scope!
+    /// let progress_counter = Arc::new(Mutex::new(0));
+    /// let counter_ref = Arc::clone(&progress_counter);
+    ///
+    /// let options = LoadOptions::new()
+    ///     .with_progress(move |p| {
+    ///         *counter_ref.lock().unwrap() += 1;
+    ///         println!("{}%", (p.progress * 100.0) as u8);
+    ///     });
+    /// ```
     pub fn with_progress<F>(mut self, callback: F) -> Self
     where
-        F: Fn(LoadProgress) + Send + Sync + 'static,
+        F: Fn(LoadProgress) + Send + Sync + 'a,
     {
         self.progress_callback = Some(Box::new(callback));
         self

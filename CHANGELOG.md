@@ -1,4 +1,64 @@
 
+<a name="v0.41.1"></a>
+## [v0.41.1](https://github.com/J-F-Liu/lopdf/compare/v0.41.0...v0.41.1) (2025-10-21)
+
+### Fix
+
+* Remove `'static` lifetime bound from progress callbacks - enables real-time progress updates
+* Progress callbacks can now borrow from local scope instead of requiring `'static` lifetime
+* Fix WASM/async users being forced to use store-and-replay pattern for progress updates
+
+### API Changes
+
+* Add lifetime parameter `'a` to `LoadOptions<'a>` struct
+* Change progress callback trait bound from `'static` to `'a`
+* Update all `load_*_with_options` functions to accept `LoadOptions<'a>`
+* **Breaking change (minor):** Users with explicit type annotations need to add `<'a>` lifetime parameter
+
+### Benefits
+
+* Callbacks can now capture references from calling scope
+* Enables direct real-time progress updates (no intermediate storage needed)
+* Allows users to call their own progress callbacks directly from lopdf's callback
+* Perfect for WASM applications needing immediate UI updates
+
+### Example
+
+```rust
+// Before (0.41.0) - Didn't compile:
+let my_callback = |progress| { /* ... */ };
+let options = LoadOptions::new()
+    .with_progress(|p| {
+        my_callback(p); // ❌ Error: my_callback doesn't live long enough
+    });
+
+// After (0.41.1) - Works!
+let my_callback = |progress| { /* ... */ };
+let options = LoadOptions::new()
+    .with_progress(|p| {
+        my_callback(p); // ✅ Can borrow from local scope!
+    });
+```
+
+### Migration
+
+Most code will work without changes (lifetimes inferred). Only explicit type annotations need updating:
+
+```rust
+// Before:
+fn build_options() -> LoadOptions { /* ... */ }
+
+// After:
+fn build_options<'a>() -> LoadOptions<'a> { /* ... */ }
+```
+
+### Maintain
+
+* All existing tests pass without modifications
+* Backward compatible for code without explicit type annotations
+* Zero performance impact
+
+
 <a name="v0.41.0"></a>
 ## [v0.41.0](https://github.com/J-F-Liu/lopdf/compare/v0.40.1...v0.41.0) (2025-10-21)
 

@@ -100,7 +100,7 @@ impl Document {
     /// # Ok::<(), lopdf::Error>(())
     /// ```
     #[inline]
-    pub fn load_with_options<P: AsRef<Path>>(path: P, options: LoadOptions) -> Result<Document> {
+    pub fn load_with_options<'a, P: AsRef<Path>>(path: P, options: LoadOptions<'a>) -> Result<Document> {
         let file = File::open(path)?;
         let capacity = Some(file.metadata()?.len() as usize);
         Self::load_internal_with_options(file, capacity, None, options)
@@ -124,7 +124,7 @@ impl Document {
     /// # Ok::<(), lopdf::Error>(())
     /// ```
     #[inline]
-    pub fn load_from_with_options<R: Read>(source: R, options: LoadOptions) -> Result<Document> {
+    pub fn load_from_with_options<'a, R: Read>(source: R, options: LoadOptions<'a>) -> Result<Document> {
         Self::load_internal_with_options(source, None, None, options)
     }
 
@@ -146,7 +146,7 @@ impl Document {
     /// # Ok::<(), lopdf::Error>(())
     /// ```
     #[cfg(not(any(target_arch = "wasm32", feature = "async")))]
-    pub fn load_mem_with_options(buffer: &[u8], options: LoadOptions) -> Result<Document> {
+    pub fn load_mem_with_options<'a>(buffer: &[u8], options: LoadOptions<'a>) -> Result<Document> {
         Reader {
             buffer,
             document: Document::new(),
@@ -177,7 +177,7 @@ impl Document {
     /// # }
     /// ```
     #[cfg(any(target_arch = "wasm32", feature = "async"))]
-    pub async fn load_mem_with_options(buffer: &[u8], options: LoadOptions) -> Result<Document> {
+    pub async fn load_mem_with_options<'a>(buffer: &[u8], options: LoadOptions<'a>) -> Result<Document> {
         Reader {
             buffer,
             document: Document::new(),
@@ -186,11 +186,11 @@ impl Document {
         .await
     }
 
-    fn load_internal_with_options<R: Read>(
+    fn load_internal_with_options<'a, R: Read>(
         mut source: R,
         capacity: Option<usize>,
         filter_func: Option<FilterFunc>,
-        options: LoadOptions,
+        options: LoadOptions<'a>,
     ) -> Result<Document> {
         let mut buffer = capacity.map(Vec::with_capacity).unwrap_or_default();
         source.read_to_end(&mut buffer)?;
@@ -695,7 +695,7 @@ impl Reader<'_> {
     }
 
     /// Read whole document with progress tracking.
-    pub fn read_with_options(mut self, filter_func: Option<FilterFunc>, options: LoadOptions) -> Result<Document> {
+    pub fn read_with_options<'a>(mut self, filter_func: Option<FilterFunc>, options: LoadOptions<'a>) -> Result<Document> {
         // Stage 0: Reading file (already done)
         if let Some(ref callback) = options.progress_callback {
             callback(LoadProgress::new(0, 0.01, 0, 0, Some("Reading file".to_string())));
@@ -933,7 +933,7 @@ impl Reader<'_> {
     /// This async version yields control back to the event loop at strategic points,
     /// allowing UI updates in WASM builds or concurrent async operations.
     #[cfg(any(target_arch = "wasm32", feature = "async"))]
-    pub async fn read_with_options_async(mut self, filter_func: Option<FilterFunc>, options: LoadOptions) -> Result<Document> {
+    pub async fn read_with_options_async<'a>(mut self, filter_func: Option<FilterFunc>, options: LoadOptions<'a>) -> Result<Document> {
         // Stage 0: Reading file (already done)
         if let Some(ref callback) = options.progress_callback {
             callback(LoadProgress::new(0, 0.01, 0, 0, Some("Reading file".to_string())));
