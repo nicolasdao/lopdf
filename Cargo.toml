@@ -13,7 +13,7 @@ license = "MIT"
 name = "lopdf"
 readme = "README.md"
 repository = "https://github.com/J-F-Liu/lopdf.git"
-version = "0.40.1"
+version = "0.41.0"
 rust-version = "1.85"
 
 [dependencies]
@@ -49,6 +49,11 @@ time = { version = "0.3", features = [
 ], optional = true }
 tokio = { version = "1", features = ["fs", "io-util"], optional = true }
 weezl = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 
 [dev-dependencies]
 clap = { version = "4.0", features = ["derive"] }

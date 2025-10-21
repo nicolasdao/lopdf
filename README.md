@@ -19,6 +19,9 @@ The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no
   - [Merge PDF documents](#merge-pdf-documents)
   - [Modify PDF document](#modify-pdf-document)
   - [Load PDF with Progress Tracking](#load-pdf-with-progress-tracking)
+    - [Synchronous version (default)](#synchronous-version-default)
+    - [Async version (for WASM or with async feature)](#async-version-for-wasm-or-with-async-feature)
+    - [WASM Example](#wasm-example)
   - [Fast Metadata Extraction with load_minimal()](#fast-metadata-extraction-with-load_minimal)
   - [Extract Images with Lazy Loading](#extract-images-with-lazy-loading)
     - [SMask Support for Transparency (v0.40.0)](#smask-support-for-transparency-v0400)
@@ -516,12 +519,14 @@ use lopdf::Document;
 
 * Load PDF with Progress Tracking
 
-You can track the loading progress of PDF documents using the new `load_with_options` methods. This is useful for providing user feedback when loading large PDFs.
+You can track the loading progress of PDF documents using the `load_with_options` methods. This is useful for providing user feedback when loading large PDFs.
+
+**Synchronous version (default):**
 
 ```rust,no_run
 use lopdf::{Document, LoadOptions, ProgressInterval};
 
-#[cfg(not(feature = "async"))]
+#[cfg(not(any(target_arch = "wasm32", feature = "async")))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Basic progress tracking with percentage updates
     let options = LoadOptions::new()
@@ -553,12 +558,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
 
-#[cfg(feature = "async")]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Note: Progress tracking is currently only available for synchronous loading
-    // Use the standard Document::load() for async operations
-    println!("This example requires the async feature to be disabled");
+**Async version (for WASM or with `async` feature):**
+
+When targeting WASM or using the `async` feature, `load_mem_with_options` becomes async and yields control back to the event loop periodically. This allows UI updates in browsers and prevents freezing.
+
+```rust,no_run
+use lopdf::{Document, LoadOptions, ProgressInterval};
+
+#[cfg(any(target_arch = "wasm32", feature = "async"))]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Progress tracking with async - yields every 10 objects for UI responsiveness
+    let pdf_bytes = std::fs::read("input.pdf")?;
+    let options = LoadOptions::new()
+        .with_progress(|p| {
+            eprintln!("[{}%] {}", (p.progress * 100.0) as u8, p.stage_name);
+        })
+        .with_progress_interval(ProgressInterval::Percentage(5.0));
+
+    // Note the .await - function is async
+    let doc = Document::load_mem_with_options(&pdf_bytes, options).await?;
+
+    Ok(())
+}
+```
+
+**WASM Example:**
+
+```rust
+use wasm_bindgen::prelude::*;
+use lopdf::{Document, LoadOptions};
+
+#[wasm_bindgen]
+pub async fn load_pdf_with_progress(bytes: &[u8]) -> Result<(), JsValue> {
+    let options = LoadOptions::new()
+        .with_progress(|p| {
+            // This callback fires AND the browser can repaint the UI!
+            web_sys::console::log_1(
+                &format!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name).into()
+            );
+        });
+
+    // Async version yields to JS event loop every 10 objects
+    let doc = Document::load_mem_with_options(bytes, options).await
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
     Ok(())
 }
 ```
@@ -569,7 +614,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Stage 2: Parsing version (1%)
 - Stage 3: Parsing cross-reference table (35%)
 - Stage 4: Parsing trailer (5%)
-- Stage 5: Loading objects (55%)
+- Stage 5: Loading objects (55%) - Yields to event loop every 10 objects when async
 - Stage 6: Complete (100%)
 
 **Progress Intervals:**
@@ -577,9 +622,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `ProgressInterval::Items(usize)` - Report every N items processed (e.g., `10` for every 10 objects)
 
 **Available Methods:**
-- `Document::load_with_options(path, options)` - Load from file path with progress
-- `Document::load_from_with_options(source, options)` - Load from reader with progress
-- `Document::load_mem_with_options(buffer, options)` - Load from memory with progress
+- `Document::load_with_options(path, options)` - Load from file path with progress (sync)
+- `Document::load_from_with_options(source, options)` - Load from reader with progress (sync)
+- `Document::load_mem_with_options(buffer, options)` - Load from memory with progress (async when WASM or `async` feature enabled, sync otherwise)
+
+**Key Features:**
+- **WASM Support**: Async version prevents UI freezing by yielding to JavaScript event loop
+- **Real-time Updates**: Progress callbacks fire AND UI can repaint between yields
+- **Backward Compatible**: Sync API preserved when neither WASM nor `async` feature is enabled
+- **Strategic Yielding**: Yields after major stages and every 10 objects during loading
 
 All existing loading methods (`load()`, `load_from()`, `load_mem()`) remain unchanged and continue to work without progress tracking.
 

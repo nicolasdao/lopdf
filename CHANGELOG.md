@@ -1,4 +1,50 @@
 
+<a name="v0.41.0"></a>
+## [v0.41.0](https://github.com/J-F-Liu/lopdf/compare/v0.40.1...v0.41.0) (2025-10-21)
+
+### Add
+
+* Add async support to `load_mem_with_options()` for WASM and async feature
+* Add `yield_now()` helper functions for WASM (using Promise.resolve) and tokio (using tokio::task::yield_now)
+* Add `read_with_options_async()` method with strategic yield points for responsive UI
+* Add WASM-specific dependencies: wasm-bindgen, wasm-bindgen-futures, js-sys
+* Add strategic yield points after major parsing stages and every 10 objects during loading
+
+### Fix
+
+* Fix WASM UI freezing issue - progress callbacks now fire AND browser can repaint UI
+* Fix event loop blocking by yielding control back to JavaScript/tokio runtime
+* Fix progress bar appearing stuck at 1% despite callbacks executing
+
+### Performance
+
+* Enable real-time progress updates in WASM builds (no more 10-30 second UI freeze)
+* Yield to event loop every 10 objects during Stage 5 (Loading objects)
+* Yield after parsing header, xref table, and trailer
+* Zero performance impact for non-WASM, non-async builds (sync path unchanged)
+
+### API Changes
+
+* `Document::load_mem_with_options()` is now async when either:
+  - Targeting WASM (`target_arch = "wasm32"`), OR
+  - Using the `async` feature
+* API remains synchronous when neither condition is met (backward compatible)
+* Unified async approach - both WASM and tokio users benefit from yield points
+
+### Documentation
+
+* Update README.md with separate sync and async examples
+* Add WASM-specific example showing browser integration
+* Add comprehensive documentation for yield behavior and UI responsiveness
+* Update Table of Contents with h4 level headings for progress tracking section
+
+### Maintain
+
+* Maintain 100% backward compatibility for sync path
+* All existing tests pass without modifications
+* No breaking changes for users not using WASM or async feature
+
+
 <a name="v0.40.1"></a>
 ## [v0.40.1](https://github.com/J-F-Liu/lopdf/compare/v0.40.0...v0.40.1) (2025-10-18)
 

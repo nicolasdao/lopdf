@@ -27,6 +27,22 @@ use crate::{Document, Error, IncrementalDocument, Object, ObjectId, Result};
 
 type FilterFunc = fn((u32, u16), &mut Object) -> Option<((u32, u16), Object)>;
 
+/// Yield control back to the event loop (WASM or async runtime).
+/// This allows the browser/runtime to process other events and update the UI.
+#[cfg(target_arch = "wasm32")]
+async fn yield_now() {
+    use wasm_bindgen_futures::JsFuture;
+    use js_sys::Promise;
+    // Yield to JavaScript event loop
+    let _ = JsFuture::from(Promise::resolve(&wasm_bindgen::JsValue::NULL)).await;
+}
+
+/// Yield control back to the tokio runtime.
+#[cfg(all(feature = "async", not(target_arch = "wasm32")))]
+async fn yield_now() {
+    tokio::task::yield_now().await;
+}
+
 #[cfg(not(feature = "async"))]
 impl Document {
     /// Load a PDF document from a specified file path.
@@ -129,12 +145,45 @@ impl Document {
     /// let doc = Document::load_mem_with_options(pdf_bytes, options)?;
     /// # Ok::<(), lopdf::Error>(())
     /// ```
+    #[cfg(not(any(target_arch = "wasm32", feature = "async")))]
     pub fn load_mem_with_options(buffer: &[u8], options: LoadOptions) -> Result<Document> {
         Reader {
             buffer,
             document: Document::new(),
         }
         .read_with_options(None, options)
+    }
+
+    /// Load a PDF document from a memory slice with options (async version).
+    ///
+    /// This async version yields control back to the event loop periodically,
+    /// allowing UI updates in WASM builds or other async operations to proceed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions, ProgressInterval};
+    ///
+    /// # async fn example() -> Result<(), lopdf::Error> {
+    /// let pdf_bytes = include_bytes!("../assets/example.pdf");
+    /// let options = LoadOptions::new()
+    ///     .with_progress(|p| {
+    ///         eprintln!("Progress: {}%", (p.progress * 100.0) as u8);
+    ///     })
+    ///     .with_progress_interval(ProgressInterval::Percentage(5.0));
+    ///
+    /// let doc = Document::load_mem_with_options(pdf_bytes, options).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(any(target_arch = "wasm32", feature = "async"))]
+    pub async fn load_mem_with_options(buffer: &[u8], options: LoadOptions) -> Result<Document> {
+        Reader {
+            buffer,
+            document: Document::new(),
+        }
+        .read_with_options_async(None, options)
+        .await
     }
 
     fn load_internal_with_options<R: Read>(
@@ -855,6 +904,221 @@ impl Reader<'_> {
                 })
                 .collect();
         }
+
+        // Only add entries, but never replace entries
+        for (id, entry) in object_streams.into_inner().unwrap() {
+            self.document.objects.entry(id).or_insert(entry);
+        }
+
+        for object_id in zero_length_streams.into_inner().unwrap() {
+            let _ = self.read_stream_content(object_id);
+        }
+
+        let mut document = self.document;
+
+        if document.authenticate_password("").is_ok() {
+            document.decrypt("")?;
+        }
+
+        // Stage 6: Complete
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(6, 1.0, total_objects, total_objects, Some("Complete".to_string())));
+        }
+
+        Ok(document)
+    }
+
+    /// Read whole document with progress tracking (async version with yield points).
+    ///
+    /// This async version yields control back to the event loop at strategic points,
+    /// allowing UI updates in WASM builds or concurrent async operations.
+    #[cfg(any(target_arch = "wasm32", feature = "async"))]
+    pub async fn read_with_options_async(mut self, filter_func: Option<FilterFunc>, options: LoadOptions) -> Result<Document> {
+        // Stage 0: Reading file (already done)
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(0, 0.01, 0, 0, Some("Reading file".to_string())));
+        }
+
+        // Stage 1: Finding PDF header
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(1, 0.02, 0, 0, Some("Finding PDF header".to_string())));
+        }
+
+        let offset = self.buffer.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
+        self.buffer = &self.buffer[offset..];
+
+        // Stage 2: Parsing version
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(2, 0.03, 0, 0, Some("Parsing version".to_string())));
+        }
+
+        let version =
+            parser::header(ParserInput::new_extra(self.buffer, "header")).ok_or(ParseError::InvalidFileHeader)?;
+
+        // Yield after parsing header
+        yield_now().await;
+
+        //The binary_mark is in line 2 after the pdf version
+        if let Some(pos) = self.buffer.iter().position(|&byte| byte == b'\n') {
+            if let Some(binary_mark) =
+                parser::binary_mark(ParserInput::new_extra(&self.buffer[pos + 1..], "binary_mark"))
+            {
+                if binary_mark.iter().all(|&byte| byte >= 128) {
+                    self.document.binary_mark = binary_mark;
+                }
+            }
+        }
+
+        // Stage 3: Parsing cross-reference table
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(3, 0.06, 0, 0, Some("Parsing cross-reference table".to_string())));
+        }
+
+        let xref_start = Self::get_xref_start(self.buffer)?;
+        if xref_start > self.buffer.len() {
+            return Err(Error::Xref(XrefError::Start));
+        }
+        self.document.xref_start = xref_start;
+
+        let (mut xref, mut trailer) =
+            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
+
+        // Yield after parsing xref table
+        yield_now().await;
+
+        // Read previous Xrefs
+        let mut already_seen = HashSet::new();
+        let mut prev_xref_start = trailer.remove(b"Prev");
+        while let Some(prev) = prev_xref_start.and_then(|offset| offset.as_i64().ok()) {
+            if already_seen.contains(&prev) {
+                break;
+            }
+            already_seen.insert(prev);
+            if prev < 0 || prev as usize > self.buffer.len() {
+                return Err(Error::Xref(XrefError::PrevStart));
+            }
+
+            let (prev_xref, prev_trailer) =
+                parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[prev as usize..], ""), &self)?;
+            xref.merge(prev_xref);
+
+            // Read xref stream in hybrid-reference file
+            let prev_xref_stream_start = trailer.remove(b"XRefStm");
+            if let Some(prev) = prev_xref_stream_start.and_then(|offset| offset.as_i64().ok()) {
+                if prev < 0 || prev as usize > self.buffer.len() {
+                    return Err(Error::Xref(XrefError::StreamStart));
+                }
+
+                let (prev_xref, _) =
+                    parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[prev as usize..], ""), &self)?;
+                xref.merge(prev_xref);
+            }
+
+            prev_xref_start = prev_trailer.get(b"Prev").cloned().ok();
+        }
+        let xref_entry_count = xref.max_id().checked_add(1).ok_or(ParseError::InvalidXref)?;
+        if xref.size != xref_entry_count {
+            warn!(
+                "Size entry of trailer dictionary is {}, correct value is {}.",
+                xref.size, xref_entry_count
+            );
+            xref.size = xref_entry_count;
+        }
+
+        // Stage 4: Parsing trailer
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(4, 0.41, 0, 0, Some("Parsing trailer".to_string())));
+        }
+
+        // Yield after parsing trailer
+        yield_now().await;
+
+        self.document.version = version;
+        self.document.max_id = xref.size - 1;
+        self.document.trailer = trailer;
+        self.document.reference_table = xref;
+
+        let is_encrypted = self.document.trailer.get(b"Encrypt").is_ok();
+
+        let zero_length_streams = Mutex::new(vec![]);
+        let object_streams = Mutex::new(vec![]);
+
+        // Stage 5: Loading objects
+        let total_objects = self.document.reference_table.entries.len();
+        if let Some(ref callback) = options.progress_callback {
+            callback(LoadProgress::new(5, 0.46, 0, total_objects, Some("Loading objects".to_string())));
+        }
+
+        // For sequential loading with yield points
+        let mut objects = BTreeMap::new();
+        let mut processed = 0;
+
+        for (_, entry) in self.document.reference_table.entries.iter() {
+            if let XrefEntry::Normal { offset, .. } = *entry {
+                if let Ok((mut object_id, mut object)) = self
+                    .read_object(offset as usize, None, &mut HashSet::new())
+                    .map_err(|e| error!("Object load error: {e:?}"))
+                {
+                    if let Some(filter_func) = filter_func {
+                        if let Some((id, obj)) = filter_func(object_id, &mut object) {
+                            object_id = id;
+                            object = obj;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    if let Ok(ref mut stream) = object.as_stream_mut() {
+                        if stream.dict.has_type(b"ObjStm") && !is_encrypted {
+                            let obj_stream = ObjectStream::new(stream).ok();
+                            if let Some(obj_stream) = obj_stream {
+                                let mut object_streams_lock = object_streams.lock().unwrap();
+                                if let Some(filter_func) = filter_func {
+                                    let objs: BTreeMap<(u32, u16), Object> = obj_stream
+                                        .objects
+                                        .into_iter()
+                                        .filter_map(|(object_id, mut object)| filter_func(object_id, &mut object))
+                                        .collect();
+                                    object_streams_lock.extend(objs);
+                                } else {
+                                    object_streams_lock.extend(obj_stream.objects);
+                                }
+                            }
+                        } else if stream.content.is_empty() {
+                            let mut zero_length_streams_lock = zero_length_streams.lock().unwrap();
+                            zero_length_streams_lock.push(object_id);
+                        }
+                    }
+
+                    objects.insert(object_id, object);
+                }
+            }
+
+            processed += 1;
+
+            // Yield every 10 objects to allow UI updates
+            if processed % 10 == 0 {
+                yield_now().await;
+
+                // Report progress
+                if let Some(ref callback) = options.progress_callback {
+                    let should_report = match options.progress_interval {
+                        ProgressInterval::Items(n) => processed % n == 0 || processed == total_objects,
+                        ProgressInterval::Percentage(p) => {
+                            let current_pct = (processed as f64 / total_objects as f64) * 100.0;
+                            let prev_pct = ((processed - 1) as f64 / total_objects as f64) * 100.0;
+                            (current_pct / p).floor() > (prev_pct / p).floor() || processed == total_objects
+                        }
+                    };
+                    if should_report {
+                        let progress = 0.46 + (0.54 * processed as f64 / total_objects as f64);
+                        callback(LoadProgress::new(5, progress, processed, total_objects, None));
+                    }
+                }
+            }
+        }
+
+        self.document.objects = objects;
 
         // Only add entries, but never replace entries
         for (id, entry) in object_streams.into_inner().unwrap() {
