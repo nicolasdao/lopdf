@@ -1096,25 +1096,26 @@ impl Reader<'_> {
 
             processed += 1;
 
-            // Yield every 10 objects to allow UI updates
-            if processed % 10 == 0 {
-                yield_now().await;
-
-                // Report progress
-                if let Some(ref callback) = options.progress_callback {
-                    let should_report = match options.progress_interval {
-                        ProgressInterval::Items(n) => processed % n == 0 || processed == total_objects,
-                        ProgressInterval::Percentage(p) => {
-                            let current_pct = (processed as f64 / total_objects as f64) * 100.0;
-                            let prev_pct = ((processed - 1) as f64 / total_objects as f64) * 100.0;
-                            (current_pct / p).floor() > (prev_pct / p).floor() || processed == total_objects
-                        }
-                    };
-                    if should_report {
-                        let progress = 0.46 + (0.54 * processed as f64 / total_objects as f64);
-                        callback(LoadProgress::new(5, progress, processed, total_objects, None));
+            // Report progress on EVERY iteration (not just every 10)
+            if let Some(ref callback) = options.progress_callback {
+                let should_report = match options.progress_interval {
+                    ProgressInterval::Items(n) => processed % n == 0 || processed == total_objects,
+                    ProgressInterval::Percentage(p) => {
+                        let current_pct = (processed as f64 / total_objects as f64) * 100.0;
+                        let prev_pct = ((processed - 1) as f64 / total_objects as f64) * 100.0;
+                        (current_pct / p).floor() > (prev_pct / p).floor() || processed == total_objects
                     }
+                };
+                if should_report {
+                    let progress = 0.46 + (0.54 * processed as f64 / total_objects as f64);
+                    callback(LoadProgress::new(5, progress, processed, total_objects, None));
                 }
+            }
+
+            // Yield less frequently (every 50 objects) to reduce overhead
+            // This keeps browser responsive without killing performance
+            if processed % 50 == 0 {
+                yield_now().await;
             }
         }
 
