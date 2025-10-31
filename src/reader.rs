@@ -1562,30 +1562,67 @@ impl Reader<'_> {
         }
     }
 
+    /// Find the valid PDF region by locating the last %%EOF marker.
+    ///
+    /// Per PDF spec (ISO 32000-1:2008, Section 7.5.5), readers should ignore all data
+    /// after the last %%EOF marker. This function returns a slice containing only the
+    /// valid PDF data (everything up to and including the last %%EOF).
+    ///
+    /// If no %%EOF is found, returns the entire buffer.
+    fn find_valid_pdf_region(buffer: &[u8]) -> &[u8] {
+        // Find LAST occurrence of %%EOF (per PDF spec)
+        match buffer.windows(5).rposition(|w| w == b"%%EOF") {
+            Some(pos) => {
+                let eof_end = pos + 5; // Include the %%EOF marker itself
+                let garbage_size = buffer.len() - eof_end;
+
+                if garbage_size > 0 {
+                    warn!(
+                        "Found {} bytes of trailing data after %%EOF at byte {}. \
+                        Ignoring per PDF spec (ISO 32000-1:2008, Section 7.5.5).",
+                        garbage_size, eof_end
+                    );
+                }
+
+                &buffer[..eof_end]
+            }
+            None => {
+                warn!("No %%EOF marker found in PDF, processing entire file");
+                buffer
+            }
+        }
+    }
+
     /// Attempt to reconstruct cross-reference table by scanning the entire PDF for objects.
     ///
     /// This is similar to qpdf's repair behavior when startxref is missing or invalid.
     /// It scans the buffer for indirect object definitions (e.g., "5 0 obj") and builds
     /// a cross-reference table from their offsets.
+    ///
+    /// IMPORTANT: This function respects the %%EOF boundary and only scans the valid
+    /// PDF region (before the last %%EOF marker), ignoring any trailing garbage.
     fn reconstruct_xref(buffer: &[u8]) -> Result<(crate::xref::Xref, crate::Dictionary)> {
         use crate::xref::{Xref, XrefEntry, XrefType};
         use crate::Dictionary;
 
         warn!("Attempting to reconstruct cross-reference table (PDF may be corrupted)");
 
+        // Get valid PDF region (respects %%EOF boundary, ignores trailing garbage)
+        let valid_region = Self::find_valid_pdf_region(buffer);
+
         let mut xref = Xref::new(0, XrefType::CrossReferenceTable);
         let mut max_id = 0u32;
 
-        // Scan for indirect object definitions: "N G obj" where N is object number, G is generation
+        // Scan for indirect object definitions ONLY in valid PDF region: "N G obj"
         // Pattern: <number> <number> obj
         let mut pos = 0;
-        while pos < buffer.len() {
+        while pos < valid_region.len() {
             // Look for space or newline followed by digit
-            if pos > 0 && (buffer[pos - 1] == b' ' || buffer[pos - 1] == b'\n' || buffer[pos - 1] == b'\r')
-                && buffer[pos].is_ascii_digit()
+            if pos > 0 && (valid_region[pos - 1] == b' ' || valid_region[pos - 1] == b'\n' || valid_region[pos - 1] == b'\r')
+                && valid_region[pos].is_ascii_digit()
             {
                 // Try to parse object ID
-                if let Some((obj_num, gen_num, obj_start)) = Self::try_parse_object_header(buffer, pos) {
+                if let Some((obj_num, gen_num, obj_start)) = Self::try_parse_object_header(valid_region, pos) {
                     // Found an indirect object!
                     xref.insert(
                         obj_num,
@@ -1603,8 +1640,8 @@ impl Reader<'_> {
         }
 
         // Handle the very first object (might not have preceding whitespace)
-        if buffer.len() > 10 && buffer[0].is_ascii_digit() {
-            if let Some((obj_num, gen_num, _)) = Self::try_parse_object_header(buffer, 0) {
+        if valid_region.len() > 10 && valid_region[0].is_ascii_digit() {
+            if let Some((obj_num, gen_num, _)) = Self::try_parse_object_header(valid_region, 0) {
                 xref.insert(
                     obj_num,
                     XrefEntry::Normal {
@@ -1628,9 +1665,9 @@ impl Reader<'_> {
             max_id
         );
 
-        // Try to find trailer dictionary
-        let trailer = Self::find_trailer_dict(buffer).unwrap_or_else(|| {
-            warn!("Could not find trailer dictionary, creating minimal trailer");
+        // Try to find trailer dictionary in valid region only
+        let trailer = Self::find_trailer_dict(valid_region).unwrap_or_else(|| {
+            warn!("Could not find trailer dictionary in valid region, creating minimal trailer");
             // Create minimal trailer with just the essentials
             Dictionary::new()
         });
@@ -1694,10 +1731,16 @@ impl Reader<'_> {
     }
 
     /// Try to find the trailer dictionary in the buffer.
+    ///
+    /// Per PDF spec, searches in the last 1024 bytes (or entire buffer if smaller).
+    /// The buffer should be the valid PDF region (before %%EOF) to avoid finding
+    /// garbage trailers in post-EOF data.
     fn find_trailer_dict(buffer: &[u8]) -> Option<crate::Dictionary> {
-        // Search for "trailer" keyword (search from end of file backwards)
-        let mut pos = buffer.len().saturating_sub(512);
+        // Search in last 1024 bytes per PDF spec, or entire buffer if smaller
+        let search_start = buffer.len().saturating_sub(1024);
 
+        // Search forward from search_start for "trailer" keyword
+        let mut pos = search_start;
         while pos < buffer.len() {
             if pos + 7 <= buffer.len() && &buffer[pos..pos + 7] == b"trailer" {
                 // Found "trailer" keyword, try to parse dictionary after it
