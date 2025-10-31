@@ -74,6 +74,10 @@ pub struct LoadOptions<'a> {
 
     /// Progress reporting interval
     pub progress_interval: ProgressInterval,
+
+    /// Whether to attempt automatic repair of corrupted PDFs
+    /// When enabled, will attempt to reconstruct cross-reference table if missing or invalid
+    pub repair: bool,
 }
 
 impl Default for LoadOptions<'_> {
@@ -81,6 +85,7 @@ impl Default for LoadOptions<'_> {
         Self {
             progress_callback: None,
             progress_interval: ProgressInterval::default(),
+            repair: false,
         }
     }
 }
@@ -146,6 +151,39 @@ impl<'a> LoadOptions<'a> {
     /// ```
     pub fn with_progress_interval(mut self, interval: ProgressInterval) -> Self {
         self.progress_interval = interval;
+        self
+    }
+
+    /// Enable automatic repair of corrupted PDFs
+    ///
+    /// When enabled, lopdf will attempt to reconstruct the cross-reference table
+    /// if it's missing or invalid. This is useful for handling PDFs with damaged
+    /// structure (e.g., missing startxref marker) that would otherwise fail to load.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions};
+    ///
+    /// // Load a corrupted PDF with automatic repair
+    /// let options = LoadOptions::new()
+    ///     .with_repair(true)
+    ///     .with_progress(|p| {
+    ///         println!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name);
+    ///     });
+    ///
+    /// let doc = Document::load_with_options("corrupted.pdf", options)?;
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    ///
+    /// # Notes
+    ///
+    /// - Repair is opt-in and disabled by default to maintain strict parsing behavior
+    /// - Similar to qpdf's --check behavior with automatic cross-reference reconstruction
+    /// - May emit warnings when repair is performed
+    /// - Repaired PDFs should be validated before use in production
+    pub fn with_repair(mut self, repair: bool) -> Self {
+        self.repair = repair;
         self
     }
 }

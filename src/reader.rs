@@ -276,6 +276,57 @@ impl Document {
         .read_minimal()
     }
 
+    /// Load minimal PDF metadata from a specified file path with options (including repair).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions};
+    ///
+    /// let options = LoadOptions::new()
+    ///     .with_repair(true);  // Enable repair for corrupted PDFs
+    ///
+    /// let doc = Document::load_minimal_with_options("corrupted.pdf", options)?;
+    /// println!("Pages: {}", doc.get_pages().len());
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    #[inline]
+    pub fn load_minimal_with_options<'a, P: AsRef<Path>>(path: P, options: LoadOptions<'a>) -> Result<Document> {
+        let file = File::open(path)?;
+        let capacity = Some(file.metadata()?.len() as usize);
+        Self::load_minimal_internal_with_options(file, capacity, options)
+    }
+
+    /// Load minimal PDF metadata from an arbitrary source with options (including repair).
+    ///
+    /// See [`load_minimal_with_options`](Self::load_minimal_with_options) for details.
+    #[inline]
+    pub fn load_minimal_from_with_options<'a, R: Read>(source: R, options: LoadOptions<'a>) -> Result<Document> {
+        Self::load_minimal_internal_with_options(source, None, options)
+    }
+
+    /// Load minimal PDF metadata from a memory slice with options (including repair).
+    ///
+    /// See [`load_minimal_with_options`](Self::load_minimal_with_options) for details.
+    pub fn load_minimal_mem_with_options<'a>(buffer: &[u8], options: LoadOptions<'a>) -> Result<Document> {
+        Reader {
+            buffer,
+            document: Document::new(),
+        }
+        .read_minimal_with_options(options)
+    }
+
+    fn load_minimal_internal_with_options<'a, R: Read>(mut source: R, capacity: Option<usize>, options: LoadOptions<'a>) -> Result<Document> {
+        let mut buffer = capacity.map(Vec::with_capacity).unwrap_or_default();
+        source.read_to_end(&mut buffer)?;
+
+        Reader {
+            buffer: &buffer,
+            document: Document::new(),
+        }
+        .read_minimal_with_options(options)
+    }
+
     /// Process images from a PDF file with a callback function.
     ///
     /// This method loads only the structural objects and image XObjects needed to extract
@@ -379,6 +430,58 @@ impl Document {
         .process_images(callback)
     }
 
+    /// Process images from a PDF file with options (including repair).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use lopdf::{Document, LoadOptions};
+    ///
+    /// let options = LoadOptions::new()
+    ///     .with_repair(true);  // Enable repair for corrupted PDFs
+    ///
+    /// Document::process_images_with_options("corrupted.pdf", options, |img| {
+    ///     println!("Found image on page {}", img.page_number);
+    ///     Ok(())
+    /// })?;
+    /// # Ok::<(), lopdf::Error>(())
+    /// ```
+    pub fn process_images_with_options<'a, P, F>(path: P, options: LoadOptions<'a>, callback: F) -> Result<()>
+    where
+        P: AsRef<Path>,
+        F: FnMut(crate::xobject::PageImage) -> Result<()>,
+    {
+        let file = File::open(path)?;
+        let capacity = Some(file.metadata()?.len() as usize);
+        Self::process_images_internal_with_options(file, capacity, options, callback)
+    }
+
+    /// Process images from an arbitrary source with options (including repair).
+    ///
+    /// See [`process_images_with_options`](Self::process_images_with_options) for details.
+    #[inline]
+    pub fn process_images_from_with_options<'a, R, F>(source: R, options: LoadOptions<'a>, callback: F) -> Result<()>
+    where
+        R: Read,
+        F: FnMut(crate::xobject::PageImage) -> Result<()>,
+    {
+        Self::process_images_internal_with_options(source, None, options, callback)
+    }
+
+    /// Process images from a memory slice with options (including repair).
+    ///
+    /// See [`process_images_with_options`](Self::process_images_with_options) for details.
+    pub fn process_images_mem_with_options<'a, F>(buffer: &[u8], options: LoadOptions<'a>, callback: F) -> Result<()>
+    where
+        F: FnMut(crate::xobject::PageImage) -> Result<()>,
+    {
+        Reader {
+            buffer,
+            document: Document::new(),
+        }
+        .process_images_with_options(options, callback)
+    }
+
     fn process_images_internal<R, F>(mut source: R, capacity: Option<usize>, callback: F) -> Result<()>
     where
         R: Read,
@@ -392,6 +495,21 @@ impl Document {
             document: Document::new(),
         }
         .process_images(callback)
+    }
+
+    fn process_images_internal_with_options<'a, R, F>(mut source: R, capacity: Option<usize>, options: LoadOptions<'a>, callback: F) -> Result<()>
+    where
+        R: Read,
+        F: FnMut(crate::xobject::PageImage) -> Result<()>,
+    {
+        let mut buffer = capacity.map(Vec::with_capacity).unwrap_or_default();
+        source.read_to_end(&mut buffer)?;
+
+        Reader {
+            buffer: &buffer,
+            document: Document::new(),
+        }
+        .process_images_with_options(options, callback)
     }
 }
 
@@ -733,14 +851,8 @@ impl Reader<'_> {
             callback(LoadProgress::new(3, 0.06, 0, 0, Some("Parsing cross-reference table".to_string())));
         }
 
-        let xref_start = Self::get_xref_start(self.buffer)?;
-        if xref_start > self.buffer.len() {
-            return Err(Error::Xref(XrefError::Start));
-        }
+        let (mut xref, mut trailer, xref_start) = Self::load_xref_and_trailer(self.buffer, options.repair)?;
         self.document.xref_start = xref_start;
-
-        let (mut xref, mut trailer) =
-            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
 
         // Read previous Xrefs
         let mut already_seen = HashSet::new();
@@ -974,14 +1086,8 @@ impl Reader<'_> {
             callback(LoadProgress::new(3, 0.06, 0, 0, Some("Parsing cross-reference table".to_string())));
         }
 
-        let xref_start = Self::get_xref_start(self.buffer)?;
-        if xref_start > self.buffer.len() {
-            return Err(Error::Xref(XrefError::Start));
-        }
+        let (mut xref, mut trailer, xref_start) = Self::load_xref_and_trailer(self.buffer, options.repair)?;
         self.document.xref_start = xref_start;
-
-        let (mut xref, mut trailer) =
-            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
 
         // Yield after parsing xref table
         yield_now().await;
@@ -1152,7 +1258,13 @@ impl Reader<'_> {
     /// - Info dictionary metadata
     ///
     /// It loads ~3-5 objects instead of all objects in the document.
-    pub fn read_minimal(mut self) -> Result<Document> {
+    pub fn read_minimal(self) -> Result<Document> {
+        // Call the version with options, using default (no repair)
+        self.read_minimal_with_options(LoadOptions::default())
+    }
+
+    /// Read minimal document metadata with options (including repair support).
+    pub fn read_minimal_with_options(mut self, options: LoadOptions) -> Result<Document> {
         // Parse header and version
         let offset = self.buffer.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
         self.buffer = &self.buffer[offset..];
@@ -1171,15 +1283,9 @@ impl Reader<'_> {
             }
         }
 
-        // Parse xref and trailer
-        let xref_start = Self::get_xref_start(self.buffer)?;
-        if xref_start > self.buffer.len() {
-            return Err(Error::Xref(XrefError::Start));
-        }
+        // Parse xref and trailer using shared helper (with repair support)
+        let (mut xref, mut trailer, xref_start) = Self::load_xref_and_trailer(self.buffer, options.repair)?;
         self.document.xref_start = xref_start;
-
-        let (mut xref, mut trailer) =
-            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
 
         // Read previous Xrefs
         let mut already_seen = HashSet::new();
@@ -1427,6 +1533,202 @@ impl Reader<'_> {
         None
     }
 
+    /// Load cross-reference table and trailer, with optional repair fallback.
+    ///
+    /// This is a reusable method that handles both normal xref loading and repair fallback.
+    /// It's used by all loading functions (load, load_minimal, process_images).
+    fn load_xref_and_trailer(buffer: &[u8], repair_enabled: bool) -> Result<(crate::xref::Xref, crate::Dictionary, usize)> {
+        match Self::get_xref_start(buffer) {
+            Ok(xref_start) if xref_start <= buffer.len() => {
+                // Normal path: valid xref found
+                let reader = Reader {
+                    buffer,
+                    document: Document::new(),
+                };
+                let (xref, trailer) = parser::xref_and_trailer(
+                    ParserInput::new_extra(&buffer[xref_start..], "xref"),
+                    &reader
+                )?;
+                Ok((xref, trailer, xref_start))
+            }
+            Err(Error::Xref(XrefError::Start)) if repair_enabled => {
+                // Repair path: attempt reconstruction
+                warn!("startxref not found or invalid, attempting repair");
+                let (xref, trailer) = Self::reconstruct_xref(buffer)?;
+                Ok((xref, trailer, 0)) // xref_start is 0 for reconstructed xref
+            }
+            Err(e) => Err(e),
+            Ok(_) => Err(Error::Xref(XrefError::Start)),
+        }
+    }
+
+    /// Attempt to reconstruct cross-reference table by scanning the entire PDF for objects.
+    ///
+    /// This is similar to qpdf's repair behavior when startxref is missing or invalid.
+    /// It scans the buffer for indirect object definitions (e.g., "5 0 obj") and builds
+    /// a cross-reference table from their offsets.
+    fn reconstruct_xref(buffer: &[u8]) -> Result<(crate::xref::Xref, crate::Dictionary)> {
+        use crate::xref::{Xref, XrefEntry, XrefType};
+        use crate::Dictionary;
+
+        warn!("Attempting to reconstruct cross-reference table (PDF may be corrupted)");
+
+        let mut xref = Xref::new(0, XrefType::CrossReferenceTable);
+        let mut max_id = 0u32;
+
+        // Scan for indirect object definitions: "N G obj" where N is object number, G is generation
+        // Pattern: <number> <number> obj
+        let mut pos = 0;
+        while pos < buffer.len() {
+            // Look for space or newline followed by digit
+            if pos > 0 && (buffer[pos - 1] == b' ' || buffer[pos - 1] == b'\n' || buffer[pos - 1] == b'\r')
+                && buffer[pos].is_ascii_digit()
+            {
+                // Try to parse object ID
+                if let Some((obj_num, gen_num, obj_start)) = Self::try_parse_object_header(buffer, pos) {
+                    // Found an indirect object!
+                    xref.insert(
+                        obj_num,
+                        XrefEntry::Normal {
+                            offset: pos as u32,
+                            generation: gen_num,
+                        },
+                    );
+                    max_id = max_id.max(obj_num);
+                    pos = obj_start; // Skip past "obj" keyword
+                    continue;
+                }
+            }
+            pos += 1;
+        }
+
+        // Handle the very first object (might not have preceding whitespace)
+        if buffer.len() > 10 && buffer[0].is_ascii_digit() {
+            if let Some((obj_num, gen_num, _)) = Self::try_parse_object_header(buffer, 0) {
+                xref.insert(
+                    obj_num,
+                    XrefEntry::Normal {
+                        offset: 0,
+                        generation: gen_num,
+                    },
+                );
+                max_id = max_id.max(obj_num);
+            }
+        }
+
+        xref.size = max_id + 1;
+
+        if xref.entries.is_empty() {
+            return Err(Error::Parse(ParseError::InvalidXref));
+        }
+
+        warn!(
+            "Reconstructed cross-reference table with {} objects (max ID: {})",
+            xref.entries.len(),
+            max_id
+        );
+
+        // Try to find trailer dictionary
+        let trailer = Self::find_trailer_dict(buffer).unwrap_or_else(|| {
+            warn!("Could not find trailer dictionary, creating minimal trailer");
+            // Create minimal trailer with just the essentials
+            Dictionary::new()
+        });
+
+        Ok((xref, trailer))
+    }
+
+    /// Try to parse an indirect object header at the given position.
+    /// Returns (object_number, generation_number, offset_after_obj_keyword) if successful.
+    fn try_parse_object_header(buffer: &[u8], start_pos: usize) -> Option<(u32, u16, usize)> {
+        let mut pos = start_pos;
+
+        // Parse object number
+        let obj_num_start = pos;
+        while pos < buffer.len() && buffer[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == obj_num_start {
+            return None; // No digits found
+        }
+        let obj_num_str = std::str::from_utf8(&buffer[obj_num_start..pos]).ok()?;
+        let obj_num: u32 = obj_num_str.parse().ok()?;
+
+        // Skip whitespace
+        while pos < buffer.len() && (buffer[pos] == b' ' || buffer[pos] == b'\t') {
+            pos += 1;
+        }
+
+        // Parse generation number
+        let gen_num_start = pos;
+        while pos < buffer.len() && buffer[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == gen_num_start {
+            return None; // No digits found
+        }
+        let gen_num_str = std::str::from_utf8(&buffer[gen_num_start..pos]).ok()?;
+        let gen_num: u16 = gen_num_str.parse().ok()?;
+
+        // Skip whitespace
+        while pos < buffer.len() && (buffer[pos] == b' ' || buffer[pos] == b'\t') {
+            pos += 1;
+        }
+
+        // Check for "obj" keyword
+        if pos + 3 <= buffer.len() && &buffer[pos..pos + 3] == b"obj" {
+            // Verify it's followed by whitespace or end of buffer
+            if pos + 3 == buffer.len()
+                || buffer[pos + 3] == b' '
+                || buffer[pos + 3] == b'\n'
+                || buffer[pos + 3] == b'\r'
+                || buffer[pos + 3] == b'\t'
+                || buffer[pos + 3] == b'<'
+                || buffer[pos + 3] == b'['
+            {
+                return Some((obj_num, gen_num, pos + 3));
+            }
+        }
+
+        None
+    }
+
+    /// Try to find the trailer dictionary in the buffer.
+    fn find_trailer_dict(buffer: &[u8]) -> Option<crate::Dictionary> {
+        // Search for "trailer" keyword (search from end of file backwards)
+        let mut pos = buffer.len().saturating_sub(512);
+
+        while pos < buffer.len() {
+            if pos + 7 <= buffer.len() && &buffer[pos..pos + 7] == b"trailer" {
+                // Found "trailer" keyword, try to parse dictionary after it
+                let mut dict_start = pos + 7;
+
+                // Skip whitespace
+                while dict_start < buffer.len()
+                    && (buffer[dict_start] == b' '
+                        || buffer[dict_start] == b'\n'
+                        || buffer[dict_start] == b'\r'
+                        || buffer[dict_start] == b'\t')
+                {
+                    dict_start += 1;
+                }
+
+                // Try to parse dictionary
+                if dict_start < buffer.len() && buffer[dict_start] == b'<' {
+                    if let Ok((_remaining, trailer)) = parser::dictionary(ParserInput::new_extra(
+                        &buffer[dict_start..],
+                        "trailer dict",
+                    )) {
+                        return Some(trailer);
+                    }
+                }
+            }
+            pos += 1;
+        }
+
+        None
+    }
+
     /// Process images from PDF with a callback, loading them lazily as they're discovered.
     ///
     /// This loads only the structural objects and image XObjects, skipping content streams,
@@ -1434,12 +1736,23 @@ impl Reader<'_> {
     ///
     /// The callback is invoked immediately when each image is found, allowing for
     /// streaming/progressive display of images rather than batch loading.
-    pub fn process_images<F>(mut self, mut callback: F) -> Result<()>
+    pub fn process_images<F>(self, callback: F) -> Result<()>
     where
         F: FnMut(crate::xobject::PageImage) -> Result<()>,
     {
-        // First, load minimal structure (header, trailer, catalog, pages tree)
-        self = Self::load_minimal_structure(self)?;
+        // Call the version with options, using default (no repair)
+        self.process_images_with_options(LoadOptions::default(), callback)
+    }
+
+    /// Process images from PDF with options (including repair support).
+    ///
+    /// Similar to `process_images` but accepts `LoadOptions` for configuration.
+    pub fn process_images_with_options<F>(mut self, options: LoadOptions, mut callback: F) -> Result<()>
+    where
+        F: FnMut(crate::xobject::PageImage) -> Result<()>,
+    {
+        // First, load minimal structure (header, trailer, catalog, pages tree) with options
+        self = Self::load_minimal_structure_with_options(self, options)?;
 
         // Get all pages
         let pages = self.document.get_pages();
@@ -1534,7 +1847,13 @@ impl Reader<'_> {
 
     /// Load minimal PDF structure (header, trailer, catalog, pages tree only)
     /// This also loads any object streams that contain structural objects
-    fn load_minimal_structure(mut self) -> Result<Self> {
+    fn load_minimal_structure(self) -> Result<Self> {
+        // Call the version with options, using default (no repair)
+        self.load_minimal_structure_with_options(LoadOptions::default())
+    }
+
+    /// Load minimal PDF structure with options (including repair support)
+    fn load_minimal_structure_with_options(mut self, options: LoadOptions) -> Result<Self> {
         // Parse header and version
         let offset = self.buffer.windows(5).position(|w| w == b"%PDF-").unwrap_or(0);
         self.buffer = &self.buffer[offset..];
@@ -1553,15 +1872,9 @@ impl Reader<'_> {
             }
         }
 
-        // Parse xref and trailer
-        let xref_start = Self::get_xref_start(self.buffer)?;
-        if xref_start > self.buffer.len() {
-            return Err(Error::Xref(XrefError::Start));
-        }
+        // Parse xref and trailer using shared helper (with repair support)
+        let (mut xref, mut trailer, xref_start) = Self::load_xref_and_trailer(self.buffer, options.repair)?;
         self.document.xref_start = xref_start;
-
-        let (mut xref, mut trailer) =
-            parser::xref_and_trailer(ParserInput::new_extra(&self.buffer[xref_start..], "xref"), &self)?;
 
         // Read previous Xrefs
         let mut already_seen = HashSet::new();

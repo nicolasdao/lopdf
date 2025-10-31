@@ -22,6 +22,7 @@ The PDF 2.0 specification is available [here](https://www.pdfa.org/announcing-no
     - [Synchronous version (default)](#synchronous-version-default)
     - [Async version (for WASM or with async feature)](#async-version-for-wasm-or-with-async-feature)
     - [WASM Example](#wasm-example)
+  - [Handling Corrupted PDFs with Repair](#handling-corrupted-pdfs-with-repair)
   - [Fast Metadata Extraction with load_minimal()](#fast-metadata-extraction-with-load_minimal)
   - [Extract Images with Lazy Loading](#extract-images-with-lazy-loading)
     - [SMask Support for Transparency (v0.40.0)](#smask-support-for-transparency-v0400)
@@ -633,6 +634,72 @@ pub async fn load_pdf_with_progress(bytes: &[u8]) -> Result<(), JsValue> {
 - **Strategic Yielding**: Yields after major stages and every 10 objects during loading
 
 All existing loading methods (`load()`, `load_from()`, `load_mem()`) remain unchanged and continue to work without progress tracking.
+
+* Handling Corrupted PDFs with Repair
+
+lopdf can automatically repair PDFs with damaged structure (e.g., missing or invalid `startxref` marker) by reconstructing the cross-reference table. This is similar to qpdf's `--check` behavior and is useful for handling PDFs from older or buggy generators.
+
+**Problem:** PDFs from older generators (mPDF 5.x, TCPDF, etc.) often have corrupted xref tables, causing load failures:
+```
+Error: failed parsing cross reference table: invalid start value
+```
+
+**Solution:** Enable repair mode with `LoadOptions::with_repair(true)`:
+
+```rust,no_run
+use lopdf::{Document, LoadOptions};
+
+// Full document load with repair
+let options = LoadOptions::new()
+    .with_repair(true)
+    .with_progress(|p| {
+        println!("{}%: {}", (p.progress * 100.0) as u8, p.stage_name);
+    });
+
+let doc = Document::load_with_options("corrupted.pdf", options)?;
+println!("Loaded {} pages", doc.get_pages().len());
+# Ok::<(), lopdf::Error>(())
+```
+
+**Repair works with all loading methods:**
+
+```rust,no_run
+use lopdf::{Document, LoadOptions};
+
+let options = LoadOptions::new().with_repair(true);
+
+// Method 1: Full document load
+let doc = Document::load_with_options("corrupted.pdf", options.clone())?;
+
+// Method 2: Fast metadata extraction
+let minimal = Document::load_minimal_with_options("corrupted.pdf", options.clone())?;
+println!("Pages: {}", minimal.get_pages().len());
+
+// Method 3: Image extraction
+Document::process_images_with_options("corrupted.pdf", options, |img| {
+    println!("Found {}x{} image on page {}", img.width, img.height, img.page_number);
+    Ok(())
+})?;
+# Ok::<(), lopdf::Error>(())
+```
+
+**How it works:**
+1. Scans entire PDF for indirect object definitions (e.g., `5 0 obj`)
+2. Builds cross-reference table from discovered object offsets
+3. Attempts to locate trailer dictionary
+4. Proceeds with normal parsing
+
+**When to use:**
+- PDF compression tools processing user-uploaded files
+- Document management systems ingesting PDFs from multiple sources
+- Batch processing pipelines that shouldn't fail on minor corruption
+- Web applications handling PDFs from third-party APIs
+
+**Notes:**
+- Repair is opt-in (disabled by default) to maintain strict parsing behavior
+- Emits warnings when repair is attempted (use `RUST_LOG=warn` to see)
+- Approximately 5-10% of real-world PDFs have minor structural damage
+- Repaired PDFs should be validated before use in production
 
 * Fast Metadata Extraction with `load_minimal()`
 
